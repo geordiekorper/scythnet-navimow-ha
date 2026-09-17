@@ -1,17 +1,24 @@
-# Scythnet fork
-
-## 1.1.0+scythnet.1
-
-- Add explicit resume and stop actions with Home Assistant device selection.
-- Resolve the current device connection for each call, refresh its token, and report SDK failures.
-- Remove actions on last entry unload and restore them on reload.
-- Add seven service tests with mocked mower commands.
-
 # Changelog
 
-> This is a fork of [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA)
-> adding real-time **position and zone** support. Fork releases are listed first;
-> upstream history follows.
+> This Scythnet fork is based on [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA),
+> including position/zone work from [pgoutsos/NavimowHA](https://github.com/pgoutsos/NavimowHA)
+> and the original [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
+> Fork releases are listed first; upstream history follows.
+
+## Scythnet fork — 1.1.1.dev0 (development)
+
+- Add `navimow.resume` and `navimow.stop` actions with standard mower entity targeting.
+  Stop pauses the current task; it does not cancel or delete it.
+- Use shared authentication, command submission and state refresh for mower controls
+  and the new actions, with consistent logs identifying the command and device.
+- Report unsupported blade-height requests with a warning and action error.
+- Log follow-up refresh failures without failing submitted actions; start reauthentication
+  immediately when command authentication fails.
+- Remove the actions when the last integration entry unloads and restore them on reload.
+
+## 1.1.0+scythnet.1 (test build)
+
+- Add explicit Navimow resume and stop actions using Home Assistant device IDs.
 
 ## 1.1.0+position.3
 

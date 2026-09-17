@@ -1,5 +1,4 @@
 """Lawn mower platform for Navimow integration."""
-import logging
 from typing import Any
 
 from homeassistant.components.lawn_mower import (
@@ -12,14 +11,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-
 from mower_sdk.api import MowerAPI
 from mower_sdk.models import DeviceStateMessage, MowerCommand
 
+from .commands import async_send_command
 from .const import DOMAIN, MOWER_STATUS_TO_ACTIVITY
 from .coordinator import NavimowCoordinator
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -130,47 +127,22 @@ class NavimowLawnMower(CoordinatorEntity[NavimowCoordinator], LawnMowerEntity):
             attributes["attributes"] = attrs.attributes
         return attributes
 
-    async def _async_send_command(self, command: MowerCommand, label: str) -> None:
-        """发送指令前先刷新 token，避免 token 过期导致 CODE_OAUTH_INFO_ILLEGAL。"""
-        await self.coordinator._async_ensure_valid_token()
-        await self._api.async_send_command(self._device_id, command)
-        _LOGGER.info("%s for device %s", label, self._device_id)
-        await self.coordinator.async_request_refresh()
-
     async def async_start_mowing(self) -> None:
         """Start mowing."""
-        try:
-            await self._async_send_command(MowerCommand.START, "Started mowing")
-        except Exception as err:
-            _LOGGER.error(
-                "Failed to start mowing for device %s: %s", self._device_id, err
-            )
-            raise
+        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.START)
 
     async def async_pause(self) -> None:
         """Pause mowing."""
-        try:
-            await self._async_send_command(MowerCommand.PAUSE, "Paused mowing")
-        except Exception as err:
-            _LOGGER.error(
-                "Failed to pause mowing for device %s: %s", self._device_id, err
-            )
-            raise
+        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.PAUSE)
 
     async def async_dock(self) -> None:
         """Dock the mower."""
-        try:
-            await self._async_send_command(MowerCommand.DOCK, "Docked")
-        except Exception as err:
-            _LOGGER.error("Failed to dock device %s: %s", self._device_id, err)
-            raise
+        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.DOCK)
 
     async def async_resume(self) -> None:
         """Resume mowing."""
-        try:
-            await self._async_send_command(MowerCommand.RESUME, "Resumed mowing")
-        except Exception as err:
-            _LOGGER.error(
-                "Failed to resume mowing for device %s: %s", self._device_id, err
-            )
-            raise
+        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.RESUME)
+
+    async def async_stop(self) -> None:
+        """Pause the task using Navimow's stop command."""
+        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.STOP)

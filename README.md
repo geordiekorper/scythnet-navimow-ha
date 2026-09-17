@@ -6,9 +6,11 @@
 
 Monitor and control Navimow robotic mowers in Home Assistant.
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=pgoutsos&repository=NavimowHA&category=Integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=geordiekorper&repository=scythnet-navimow-ha&category=Integration)
 
-> **This is a fork of [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).**
+> **This Scythnet fork is based on [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA),
+> derived from [pgoutsos/NavimowHA](https://github.com/pgoutsos/NavimowHA) and the
+> official [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).**
 > It adds **real-time position and current mowing-zone sensors** on top of the
 > official integration. All credit for the base integration goes to the Segway
 > Navimow team. See [What this fork adds](#what-this-fork-adds-) below.
@@ -57,6 +59,63 @@ update only while the mower is active and depend on internet connectivity. Build
 any safety-critical automation (e.g. a gate) with a fallback on the mower
 `status` and a physical sensor.
 
+## Scythnet fork: resume and stop actions
+
+The [Scythnet fork](https://github.com/geordiekorper/scythnet-navimow-ha) adds
+explicit resume and stop actions with shared command handling and logging.
+The entity targeting and shared command handling described here are development changes (`1.1.1.dev0`);
+see [the changelog](CHANGELOG.md).
+
+All five controls are available in **Developer Tools → Actions**:
+
+| Action | Purpose | Selection |
+| --- | --- | --- |
+| `lawn_mower.start_mowing` | Start mowing | Mower entity |
+| `lawn_mower.pause` | Pause mowing | Mower entity |
+| `lawn_mower.dock` | Return to the dock | Mower entity |
+| `navimow.resume` | Explicitly resume the current task | Mower entity |
+| `navimow.stop` | Pause using the stop command; does not cancel or delete the task | Mower entity |
+
+Home Assistant's standard `lawn_mower` domain provides start, pause, and dock.
+Resume and stop are additional integration actions in the `navimow` domain.
+
+For example, start mowing by targeting the mower entity (replace the example
+entity ID with yours):
+
+```yaml
+action: lawn_mower.start_mowing
+target:
+  entity_id: lawn_mower.navimow_x430
+```
+
+Resume and stop use the same entity target:
+
+```yaml
+action: navimow.resume
+target:
+  entity_id: lawn_mower.navimow_x430
+```
+
+Use `action: navimow.stop` with the same entity target to stop mowing.
+Entity IDs can be renamed in HA; use the current full ID, including `lawn_mower.`.
+Multiple mowers can be selected with a list of entity IDs.
+
+HA handles missing or unavailable entities using its standard targeting behavior;
+no command is sent to those entities.
+
+Mower controls and these actions refresh authentication before sending a command
+and request a state update afterward. Command submissions are logged at INFO level;
+submission failures at ERROR level. Each log identifies the command and device.
+State refresh failures do not fail an accepted command; Home Assistant reports
+coordinator update errors through its normal logging.
+INFO messages require INFO logging to be enabled for `custom_components.navimow.commands`.
+
+Successful submission does not confirm that the mower completed the action; check
+its reported state. A subsequent refresh failure is logged without failing the submitted action.
+Authentication failures before submission start the integration's reauthentication flow.
+Blade-height adjustment is unsupported. Requests log a warning with the device
+and requested height, then report an action error without sending a command.
+
 ## Examples 📦
 
 [`examples/gate-automation/`](examples/gate-automation/) contains a complete,
@@ -78,7 +137,7 @@ This integration is not in the default HACS store; add this fork as a custom
 repository:
 
 1. HACS → top-right menu → **Custom repositories**
-2. Repository: `https://github.com/pgoutsos/NavimowHA`
+2. Repository: `https://github.com/geordiekorper/scythnet-navimow-ha`
 3. Category: **Integration**
 4. Search for `Navimow` in HACS and download it
 5. Restart Home Assistant
@@ -95,6 +154,7 @@ re-authenticate.
 After setup you should see:
 
 - A `lawn_mower` entity (start / pause / dock)
+- Explicit `navimow.resume` and `navimow.stop` actions (see the command section above)
 - A battery `sensor`
 - `zone`, `position_x`, `position_y`, `heading`, `mowing_zone`, `mow_progress`,
   `dock_x`, and `dock_y` sensors (this fork)
@@ -128,20 +188,19 @@ mowers. This fork does **not** modify the SDK.
 
 ## Relationship to upstream & contributing back
 
-This fork tracks [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
+This Scythnet fork is based on [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA),
+which includes the position/zone work from [pgoutsos/NavimowHA](https://github.com/pgoutsos/NavimowHA)
+and the official [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
 The position/zone functionality is a candidate for upstreaming — if/when the
 official integration adds it natively, this fork can be retired in favor of the
 official release. Issues and PRs specific to the position/zone sensors can be
 filed against this repository; general integration issues belong upstream.
 
-## Scythnet fork: explicit resume and stop
+### Release versioning
 
-Version `1.1.0+scythnet.1` adds `navimow.resume` and `navimow.stop` under Developer Tools → Actions. Select the mower using the **Mower** field (a Home Assistant device registry ID, not the vendor serial number). Resume uses `PauseUnpause(true)`; stop uses `StartStop(false)` and pauses the existing task rather than cancelling it. Existing start, pause and dock controls are unchanged.
-
-```yaml
-action: navimow.resume
-data:
-  device_id: YOUR_HOME_ASSISTANT_DEVICE_ID
-```
-
-For stop, use `action: navimow.stop` with the same device field. A successful action means the SDK accepted the response; observe the mower state to confirm its behavior. No new telemetry collection or command archive is included in this release.
+`1.1.1.dev0` identifies the current development build, not a published release.
+Release Please manages the next stable version and its changelog entry from
+conventional commits, updating the integration manifest through `extra-files`.
+Stable releases use its normal version numbers without a `+scythnet` suffix.
+Before publishing a release, replace development-status wording here and in
+`info.md` and reconcile these development notes with the generated release entry.

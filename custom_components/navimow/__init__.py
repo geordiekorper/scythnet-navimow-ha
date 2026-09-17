@@ -364,7 +364,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         sdk = await hass.async_add_executor_job(_create_sdk, api)
         _attach_mqtt_debug_hooks(sdk, api)
-        async_setup_services(hass, api)
         hass.async_create_task(_probe_mqtt_status(sdk))
 
         coordinators: dict[str, NavimowCoordinator] = {}
@@ -393,6 +392,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # 转发到平台
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        async_setup_services(hass)
 
         return True
 

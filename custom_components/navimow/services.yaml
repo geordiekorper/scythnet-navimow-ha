@@ -22,25 +22,13 @@ set_blade_height:
           mode: slider
 
 resume:
-  name: Resume mowing
-  description: Resume the current mowing task using the explicit Navimow resume command.
-  fields:
-    device_id:
-      name: Mower
-      description: Select the Home Assistant device for the mower.
-      required: true
-      selector:
-        device:
-          integration: navimow
+  target:
+    entity:
+      domain: lawn_mower
+      integration: navimow
 
 stop:
-  name: Stop mowing
-  description: Stop mowing using Navimow StartStop(false). This pauses the task; it does not cancel or delete it.
-  fields:
-    device_id:
-      name: Mower
-      description: Select the Home Assistant device for the mower.
-      required: true
-      selector:
-        device:
-          integration: navimow
+  target:
+    entity:
+      domain: lawn_mower
+      integration: navimow
