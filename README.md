@@ -133,3 +133,15 @@ The position/zone functionality is a candidate for upstreaming — if/when the
 official integration adds it natively, this fork can be retired in favor of the
 official release. Issues and PRs specific to the position/zone sensors can be
 filed against this repository; general integration issues belong upstream.
+
+## Scythnet fork: explicit resume and stop
+
+Version `1.1.0+scythnet.1` adds `navimow.resume` and `navimow.stop` under Developer Tools → Actions. Select the mower using the **Mower** field (a Home Assistant device registry ID, not the vendor serial number). Resume uses `PauseUnpause(true)`; stop uses `StartStop(false)` and pauses the existing task rather than cancelling it. Existing start, pause and dock controls are unchanged.
+
+```yaml
+action: navimow.resume
+data:
+  device_id: YOUR_HOME_ASSISTANT_DEVICE_ID
+```
+
+For stop, use `action: navimow.stop` with the same device field. A successful action means the SDK accepted the response; observe the mower state to confirm its behavior. No new telemetry collection or command archive is included in this release.

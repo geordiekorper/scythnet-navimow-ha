@@ -42,5 +42,27 @@
         "name": "Battery"
       }
     }
+  },
+  "services": {
+    "resume": {
+      "name": "Resume mowing",
+      "description": "Resume the current mowing task.",
+      "fields": {
+        "device_id": {
+          "name": "Mower",
+          "description": "Select the Home Assistant device for the mower."
+        }
+      }
+    },
+    "stop": {
+      "name": "Stop mowing",
+      "description": "Pause the task using the Navimow stop command; this does not cancel or delete it.",
+      "fields": {
+        "device_id": {
+          "name": "Mower",
+          "description": "Select the Home Assistant device for the mower."
+        }
+      }
+    }
   }
 }

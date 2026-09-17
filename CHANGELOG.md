@@ -1,3 +1,12 @@
+# Scythnet fork
+
+## 1.1.0+scythnet.1
+
+- Add explicit resume and stop actions with Home Assistant device selection.
+- Resolve the current device connection for each call, refresh its token, and report SDK failures.
+- Remove actions on last entry unload and restore them on reload.
+- Add seven service tests with mocked mower commands.
+
 # Changelog
 
 > This is a fork of [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA)

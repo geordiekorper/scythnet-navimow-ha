@@ -23,7 +23,7 @@ from .const import (
     MQTT_USERNAME,
     MQTT_PASSWORD,
 )
-from .services import async_setup_services
+from .services import async_setup_services, async_unload_services
 from .location import location_topic, parse_location_payload
 
 _LOGGER = logging.getLogger(__name__)
@@ -422,6 +422,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.warning("Error disconnecting MQTT: %s", err)
 
             hass.data[DOMAIN].pop(entry.entry_id)
+        async_unload_services(hass)
 
     return unload_ok
 
