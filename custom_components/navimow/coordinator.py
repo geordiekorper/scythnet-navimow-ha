@@ -4,10 +4,12 @@ import time
 from datetime import timedelta
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from mower_sdk.api import MowerAPI
 from mower_sdk.models import (
@@ -39,10 +41,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         api: MowerAPI,
         device: Device,
         oauth_session: config_entry_oauth2_flow.OAuth2Session | None = None,
+        config_entry: ConfigEntry | None = None,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=DOMAIN,
             update_interval=timedelta(seconds=UPDATE_INTERVAL),
         )
@@ -57,7 +61,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._dock: dict[str, Any] | None = None  # learned {"x","y","n"}
         self._last_mqtt_update: float | None = None
         self._last_http_fetch: float | None = None
+        # Source of _last_state: "mqtt_push", "mqtt_cache" or "http_fallback".
         self._last_data_source: str | None = None
+        # The two sources, kept apart. _mqtt_state is the last MQTT message
+        # adopted (by identity, so a poll that finds the same object in the
+        # SDK cache does not adopt it again); _rest_status is the raw REST
+        # result including the fields the SDK keeps in DeviceStatus.extra.
+        self._mqtt_state: DeviceStateMessage | None = None
+        self._mqtt_received_at: str | None = None
+        self._rest_status: DeviceStatus | None = None
+        self._rest_polled_at: str | None = None
 
     async def async_setup(self) -> None:
         """Register callbacks from SDK."""
@@ -139,9 +152,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise
 
         cached_state = self.sdk.get_cached_state(self.device.id)
-        if cached_state is not None:
-            self._last_state = cached_state
-            self._last_data_source = "mqtt_cache"
+        if cached_state is not None and cached_state is not self._mqtt_state:
+            # A message the callback did not deliver (it arrived before the
+            # callback was registered). Adopt it once; later polls that find
+            # the same object leave the state and its source label alone.
+            self._adopt_mqtt_state(cached_state, "mqtt_cache")
 
         cached_attrs = self.sdk.get_cached_attributes(self.device.id)
         if cached_attrs is not None:
@@ -159,6 +174,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if is_mqtt_stale and can_http_fetch:
             try:
                 status = await self.api.async_get_device_status(self.device.id)
+                self._rest_status = status
+                self._rest_polled_at = dt_util.utcnow().isoformat()
                 self._last_state = self._device_status_to_state(status)
                 self._last_http_fetch = now
                 self._last_data_source = "http_fallback"
@@ -189,8 +206,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state.battery,
         )
         self._last_mqtt_update = time.monotonic()
-        self._last_data_source = "mqtt_push"
-        self.hass.loop.call_soon_threadsafe(self._update_from_state, state)
+        received_at = dt_util.utcnow().isoformat()
+        self.hass.loop.call_soon_threadsafe(
+            self._update_from_state, state, received_at
+        )
 
     def _handle_attributes(self, attrs: DeviceAttributesMessage) -> None:
         if attrs.device_id != self.device.id:
@@ -203,10 +222,52 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_mqtt_update = time.monotonic()
         self.hass.loop.call_soon_threadsafe(self._update_from_attributes, attrs)
 
-    def _update_from_state(self, state: DeviceStateMessage) -> None:
-        self._last_state = state
-        self._last_data_source = "mqtt_push"
+    def _update_from_state(
+        self, state: DeviceStateMessage, received_at: str | None = None
+    ) -> None:
+        self._adopt_mqtt_state(state, "mqtt_push", received_at)
         self.async_set_updated_data(self._build_data())
+
+    def _adopt_mqtt_state(
+        self, state: DeviceStateMessage, source: str, received_at: str | None = None
+    ) -> None:
+        """Make an MQTT state message the current device state.
+
+        ``received_at`` is when HA received the message; for a message found
+        in the SDK cache it is the poll that found it.
+        """
+        self._mqtt_state = state
+        self._mqtt_received_at = received_at or dt_util.utcnow().isoformat()
+        self._last_state = state
+        self._last_data_source = source
+
+    def get_data_source(self) -> str:
+        """Source of the current device state: mqtt_push, mqtt_cache, http_fallback or none."""
+        return self._last_data_source or "none"
+
+    def get_source_details(self) -> dict[str, Any]:
+        """The last MQTT state message and the last REST poll, side by side.
+
+        Device timestamps (``mqtt_timestamp``, ``rest_timestamp``) are what
+        the source supplied and stay None when it supplied nothing; HA's
+        own clock is only ever in ``mqtt_received_at`` / ``rest_polled_at``.
+        """
+        mqtt = self._mqtt_state
+        rest = self._rest_status
+        extra = (rest.extra if rest else None) or {}
+        return {
+            "mqtt_state": mqtt.state if mqtt else None,
+            "mqtt_raw_state": (mqtt.metrics or {}).get("raw_state") if mqtt else None,
+            "mqtt_battery": mqtt.battery if mqtt else None,
+            "mqtt_timestamp": mqtt.timestamp if mqtt else None,
+            "mqtt_received_at": self._mqtt_received_at,
+            "rest_status": rest.status.value if rest else None,
+            "rest_vehicle_state": extra.get("vehicleState"),
+            "rest_battery": rest.battery if rest else None,
+            "rest_battery_level": extra.get("descriptiveCapacityRemaining"),
+            "rest_timestamp": rest.timestamp if rest else None,
+            "rest_polled_at": self._rest_polled_at,
+        }
 
     def _update_from_attributes(self, attrs: DeviceAttributesMessage) -> None:
         self._last_attributes = attrs

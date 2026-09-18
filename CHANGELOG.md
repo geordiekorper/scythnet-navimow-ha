@@ -40,6 +40,24 @@
 - **Breaking:** `vehicle_state` and `pose_time` are no longer attributes of
   `sensor.<mower>_zone`; read them from the position-X sensor. The zone sensor now
   changes only when the target zone or the delay flag changes, not on every pose.
+- New diagnostic sensor `sensor.<mower>_data_source`: which source supplied the
+  current mower state (`mqtt_push`, `mqtt_cache`, `http_fallback` or `none`), with the
+  last MQTT state message and the last REST poll side by side as attributes
+  (`mqtt_state`, `mqtt_raw_state`, `mqtt_battery`, `mqtt_timestamp`, `mqtt_received_at`,
+  `rest_status`, `rest_vehicle_state`, `rest_battery`, `rest_battery_level`,
+  `rest_timestamp`, `rest_polled_at`). Device timestamps are what the source sent and
+  stay `null` when it sent none; Home Assistant's clock appears only in
+  `mqtt_received_at` and `rest_polled_at`.
+- Fix the source bookkeeping in the coordinator: the 30-second poll relabelled every
+  update as `mqtt_cache`, and after an HTTP fallback the next poll reverted the mower
+  state to the stale cached MQTT message. A cached message is now adopted once, and
+  the state and its label change only when a newer message or a REST result arrives.
+- SDK limits, for the record: the REST status endpoint returns only the device id,
+  battery, `vehicleState` and `descriptiveCapacityRemaining`, all of which the SDK
+  keeps, and no timestamp, so `rest_timestamp` is always `null`. For MQTT state
+  messages the SDK keeps timestamp, normalized state, the raw vendor label, battery,
+  signal strength, position and error; other keys are dropped before the integration
+  sees them.
 
 ## 1.1.0+scythnet.1 (test build)
 

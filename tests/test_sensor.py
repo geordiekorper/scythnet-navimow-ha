@@ -27,6 +27,12 @@ class FakeCoordinator:
     def get_dock_position(self):
         return None
 
+    def get_data_source(self):
+        return "mqtt_push"
+
+    def get_source_details(self):
+        return {"mqtt_state": "mowing", "rest_status": None}
+
 
 class SensorAttributesTest(unittest.TestCase):
     def setUp(self):
@@ -122,6 +128,14 @@ class SensorAttributesTest(unittest.TestCase):
         self.feed(FULL_TASK)
         self.assertEqual(sensor.native_value, 50.0)
         self.assertEqual(sensor.extra_state_attributes["progress_source"], "route")
+
+    def test_data_source_sensor_reads_the_coordinator(self):
+        sensor = self.sensor("data_source")
+        self.assertEqual(sensor.native_value, "mqtt_push")
+        self.assertEqual(
+            sensor.extra_state_attributes, {"mqtt_state": "mowing", "rest_status": None}
+        )
+        self.assertEqual(sensor.entity_description.entity_category, "diagnostic")
 
     def test_no_location_means_no_attributes(self):
         for key in ("zone", "mowing_zone", "mow_progress", "position_x"):

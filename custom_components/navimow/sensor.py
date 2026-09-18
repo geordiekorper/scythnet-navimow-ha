@@ -14,7 +14,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -110,6 +110,13 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda c: progress_percent(c.get_device_location())[0],
     ),
+    NavimowSensorEntityDescription(
+        key="data_source",
+        name="Data source",
+        icon="mdi:database-sync",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.get_data_source(),
+    ),
 )
 
 
@@ -179,11 +186,13 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Location attributes, grouped by the message type that produces them."""
+        """Attributes grouped by the source or message type that produces them."""
+        key = self.entity_description.key
+        if key == "data_source":
+            return self.coordinator.get_source_details()
         loc = self.coordinator.get_device_location()
         if not loc:
             return None
-        key = self.entity_description.key
         if key == "zone":
             # type-3 target and type-4 delay
             return {

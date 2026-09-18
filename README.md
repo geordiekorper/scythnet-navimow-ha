@@ -36,6 +36,7 @@ mower is active):
 | `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too). Attributes carry the rest of the mower's task report: `route_progress` (0–10000), `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`, `mow_start_type`, `map_work_position`, `task_time_ms` |
 | `sensor.<mower>_mow_progress` | Planned-route progress for the current task as a percentage (the mower's 0–10000 route progress ÷ 100, falling back to its `mowingPercentage`); `unknown` until a task report arrives. Not area coverage. The `progress_source` attribute names the field used |
 | `sensor.<mower>_dock_x` / `_dock_y` | Dock position in meters — auto-learned by averaging the mower's pose while docked/charging; survives restarts. `unknown` until the mower has docked once. Used by the example map card to place the dock marker (the coordinate origin is **not** reliably the dock) |
+| `sensor.<mower>_data_source` | Diagnostic: which source supplied the current mower state (`mqtt_push`, `mqtt_cache`, `http_fallback`, `none`). Attributes hold the last MQTT state message and the last REST poll side by side (`mqtt_*`, `rest_*`), each with the device's own timestamp when it sent one and Home Assistant's receipt or poll time |
 
 These unlock zone-aware and position-aware automations — for example opening a
 gate when the mower crosses between zones, geofencing, or live mapping. The
@@ -157,7 +158,7 @@ After setup you should see:
 - Explicit `navimow.resume` and `navimow.stop` actions (see the command section above)
 - A battery `sensor`
 - `zone`, `position_x`, `position_y`, `heading`, `mowing_zone`, `mow_progress`,
-  `dock_x`, and `dock_y` sensors (this fork)
+  `dock_x`, `dock_y`, and a diagnostic `data_source` sensor (this fork)
 
 The position/zone sensors show `unknown` while docked and begin updating once
 the mower starts moving. The dock sensors are the opposite: they learn (and

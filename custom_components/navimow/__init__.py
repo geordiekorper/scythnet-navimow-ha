@@ -378,6 +378,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 api=api,
                 device=device,
                 oauth_session=oauth_session,
+                config_entry=entry,
             )
             await coordinator.async_setup()
             await coordinator.async_config_entry_first_refresh()
