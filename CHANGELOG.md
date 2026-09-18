@@ -5,7 +5,9 @@
 > and the original [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
 > Fork releases are listed first; upstream history follows.
 
-## Scythnet fork — 1.1.1.dev0 (development)
+## 1.2.0 in detail
+
+The generated entry above lists the commits; this section describes what they mean for a user.
 
 - Add `navimow.resume` and `navimow.stop` actions with standard mower entity targeting.
   Stop pauses the current task; it does not cancel or delete it.

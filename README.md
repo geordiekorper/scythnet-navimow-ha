@@ -64,8 +64,7 @@ any safety-critical automation (e.g. a gate) with a fallback on the mower
 
 The [Scythnet fork](https://github.com/geordiekorper/scythnet-navimow-ha) adds
 explicit resume and stop actions with shared command handling and logging.
-The entity targeting and shared command handling described here are development changes (`1.1.1.dev0`);
-see [the changelog](CHANGELOG.md).
+Both actions ship in release 1.2.0; see [the changelog](CHANGELOG.md).
 
 All five controls are available in **Developer Tools → Actions**:
 
@@ -203,9 +202,10 @@ filed against this repository; general integration issues belong upstream.
 
 ### Release versioning
 
-`1.1.1.dev0` identifies the current development build, not a published release.
-Release Please manages the next stable version and its changelog entry from
-conventional commits, updating the integration manifest through `extra-files`.
-Stable releases use its normal version numbers without a `+scythnet` suffix.
-Before publishing a release, replace development-status wording here and in
-`info.md` and reconcile these development notes with the generated release entry.
+Releases are cut by [Release Please](https://github.com/googleapis/release-please)
+from conventional commit messages: `feat:` bumps the minor version, `fix:` the
+patch. Each run refreshes a release pull request; merging it updates the
+integration manifest, tags the commit `NavimowHA-v<version>` and publishes the
+GitHub release that HACS offers to users. The fork's releases start at 1.2.0,
+continuing the official numbering from 1.1.0. Hand-written notes for each release
+sit below the generated entry in the changelog.

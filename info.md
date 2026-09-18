@@ -4,7 +4,8 @@ Monitor and control Navimow robotic mowers in Home Assistant.
 
 ## Features
 
-- **Mower control**: Start, pause, dock, and explicit resume/stop actions (development build 1.1.1.dev0; see README)
+- **Mower control**: Start, pause, dock, and explicit resume/stop actions
+- **Live position and zones**: position, heading, target and physical zone, task progress, learned dock position, and a diagnostic data-source sensor (see README)
 - **Device monitoring**: Real-time state, battery level sensor, dashboards
 - **Real-time communication**: MQTT-based, fast state updates
 - **Native integration**: `lawn_mower` entity, full automation support
