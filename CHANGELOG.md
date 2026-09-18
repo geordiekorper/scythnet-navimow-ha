@@ -30,6 +30,16 @@
   attribute (`route`, `percentage` or `none`). A reported zero still shows 0 %.
 - Keep the last `task_delay` value when a `type:4` entry arrives without `taskDelay`
   (the shape sent on MQTT reconnect); it used to clear the flag.
+- Treat each `type:1` pose entry as one observation: X and Y must both be valid or
+  the entry is ignored and the previous pose stays; a missing theta reads `null`
+  instead of the previous heading; `vehicleState` and `time` come from the same entry.
+  When one message carries several poses, the last valid one is kept.
+- Expose the complete latest pose as attributes on `sensor.<mower>_position_x`:
+  `y`, `theta_rad` (original precision), `vehicle_state`, `pose_time_ms`,
+  `received_at` (Home Assistant's receipt time, UTC) and `source` (`mqtt_location`).
+- **Breaking:** `vehicle_state` and `pose_time` are no longer attributes of
+  `sensor.<mower>_zone`; read them from the position-X sensor. The zone sensor now
+  changes only when the target zone or the delay flag changes, not on every pose.
 
 ## 1.1.0+scythnet.1 (test build)
 

@@ -84,6 +84,28 @@ def _str(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+POSE_SOURCE = "mqtt_location"
+
+
+def parse_pose_entry(item: dict) -> dict[str, Any] | None:
+    """One type-1 entry as a complete pose, or None when X/Y are unusable.
+
+    Theta, vehicleState and time come from the same entry; a missing theta
+    is None rather than the previous pose's heading.
+    """
+    x = _num(item.get("postureX"))
+    y = _num(item.get("postureY"))
+    if x is None or y is None:
+        return None
+    return {
+        "x": x,
+        "y": y,
+        "theta": _num(item.get("postureTheta")),
+        "vehicle_state": _int(item.get("vehicleState")),
+        "pose_time": _int(item.get("time")),
+    }
+
+
 # Type-2 task entry: (vendor key, attribute name, converter). Every key is read
 # from the same entry so the group is one observation; keys absent from the
 # entry are None rather than borrowed from an earlier entry.
@@ -128,12 +150,17 @@ def progress_percent(loc: dict | None) -> tuple[float | None, str]:
 
 
 def parse_location_payload(
-    cache: dict[str, dict], device_id: str, data: Any
+    cache: dict[str, dict],
+    device_id: str,
+    data: Any,
+    received_at: str | None = None,
 ) -> dict | None:
     """Merge one location message into the per-device cache.
 
     Fields persist across messages (a pose update keeps the last-known zone).
-    Returns the updated record, or None if nothing relevant changed.
+    ``received_at`` is HA's receipt time for this message (UTC ISO 8601); it
+    is stored with the pose the message carried. Returns the updated record,
+    or None if nothing relevant changed.
     """
     if not isinstance(data, list):
         return None
@@ -145,16 +172,11 @@ def parse_location_payload(
             continue
         t = item.get("type")
         if t == 1:
-            try:
-                loc["x"] = float(item["postureX"])
-                loc["y"] = float(item["postureY"])
-                loc["theta"] = float(item["postureTheta"])
-            except (TypeError, ValueError, KeyError):
-                pass
-            if "vehicleState" in item:
-                loc["vehicle_state"] = item["vehicleState"]
-            if "time" in item:
-                loc["pose_time"] = item["time"]
+            pose = parse_pose_entry(item)
+            if pose is None:
+                continue  # unusable X/Y: the previous pose stays untouched
+            loc.update(pose)  # replaced whole; the last valid entry wins
+            loc["received_at"] = received_at
             changed = True
         elif t == 2:
             # Live physical-mowing progress. currentMowBoundary is the

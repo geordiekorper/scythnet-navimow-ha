@@ -22,7 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
-from .location import progress_percent
+from .location import POSE_SOURCE, progress_percent
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -189,8 +189,18 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
             return {
                 "partition_ids": loc.get("partition_ids"),
                 "task_delay": loc.get("task_delay"),
+            }
+        if key == "position_x":
+            # the complete latest type-1 pose, as one observation
+            if loc.get("x") is None:
+                return None
+            return {
+                "y": loc.get("y"),
+                "theta_rad": loc.get("theta"),
                 "vehicle_state": loc.get("vehicle_state"),
-                "pose_time": loc.get("pose_time"),
+                "pose_time_ms": loc.get("pose_time"),
+                "received_at": loc.get("received_at"),
+                "source": POSE_SOURCE,
             }
         if key == "mowing_zone":
             # the latest type-2 task entry, as one observation

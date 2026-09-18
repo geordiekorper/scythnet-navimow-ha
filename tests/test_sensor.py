@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from custom_components.navimow.location import parse_location_payload
 from custom_components.navimow.sensor import SENSOR_DESCRIPTIONS, NavimowSensor
 
-from tests.test_location import FULL_TASK, POSE
+from tests.test_location import FULL_TASK, POSE, RECEIVED
 
 DESCRIPTIONS = {d.key: d for d in SENSOR_DESCRIPTIONS}
 
@@ -40,7 +40,7 @@ class SensorAttributesTest(unittest.TestCase):
 
     def feed(self, *entries):
         self.coordinator.location = parse_location_payload(
-            self.cache, "dev-1", list(entries)
+            self.cache, "dev-1", list(entries), received_at=RECEIVED
         )
 
     def test_mowing_zone_exposes_the_task_group(self):
@@ -72,8 +72,41 @@ class SensorAttributesTest(unittest.TestCase):
 
     def test_other_sensors_have_no_attributes(self):
         self.feed(FULL_TASK, POSE)
-        for key in ("position_x", "position_y", "heading"):
+        for key in ("position_y", "heading"):
             self.assertIsNone(self.sensor(key).extra_state_attributes, key)
+
+    def test_position_x_exposes_the_complete_pose(self):
+        self.feed(POSE)
+        sensor = self.sensor("position_x")
+        self.assertEqual(sensor.native_value, 1.5)
+        self.assertEqual(sensor.extra_state_attributes, {
+            "y": 0.25, "theta_rad": 0.1, "vehicle_state": 4,
+            "pose_time_ms": 1700000000000, "received_at": RECEIVED,
+            "source": "mqtt_location",
+        })
+
+    def test_position_x_has_no_attributes_before_a_pose(self):
+        self.feed(FULL_TASK)
+        self.assertIsNone(self.sensor("position_x").extra_state_attributes)
+
+    def test_same_x_different_y_changes_the_attributes(self):
+        self.feed(POSE)
+        first = self.sensor("position_x").extra_state_attributes
+        self.feed({**POSE, "postureY": "0.500"})
+        second = self.sensor("position_x").extra_state_attributes
+        self.assertNotEqual(first, second)
+        self.assertEqual(second["y"], 0.5)
+
+    def test_zone_attributes_do_not_change_on_a_pose(self):
+        self.feed(
+            {"type": 3, "partitionIds": [2], "time": 1700000000010},
+            {"type": 4, "taskDelay": False},
+        )
+        before = self.sensor("zone").extra_state_attributes
+        self.feed(POSE)
+        after = self.sensor("zone").extra_state_attributes
+        self.assertEqual(before, after)
+        self.assertEqual(set(after), {"partition_ids", "task_delay"})
 
     def test_progress_is_unknown_until_a_task_report(self):
         self.feed(POSE)
@@ -91,5 +124,5 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertEqual(sensor.extra_state_attributes["progress_source"], "route")
 
     def test_no_location_means_no_attributes(self):
-        for key in ("zone", "mowing_zone", "mow_progress"):
+        for key in ("zone", "mowing_zone", "mow_progress", "position_x"):
             self.assertIsNone(self.sensor(key).extra_state_attributes, key)

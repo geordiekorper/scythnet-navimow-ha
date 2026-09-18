@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .auth import NavimowOAuth2Implementation
 from .const import (
@@ -240,11 +241,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     payload_text,
                 )
                 if device_id and topic.endswith("/realtimeDate/location"):
+                    received_at = dt_util.utcnow().isoformat()
                     try:
                         _data = json.loads(payload_text)
                     except (ValueError, TypeError):
                         _data = None
-                    _loc = parse_location_payload(_location_cache, device_id, _data)
+                    _loc = parse_location_payload(
+                        _location_cache, device_id, _data, received_at=received_at
+                    )
                     if _loc is not None:
                         _coord = _location_coordinators.get(device_id)
                         if _coord is not None:

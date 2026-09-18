@@ -18,6 +18,7 @@ POSE = {
     "postureTheta": "0.100", "postureX": "1.500", "postureY": "0.250",
     "time": 1700000000000, "type": 1, "vehicleState": 4,
 }
+RECEIVED = "2026-09-17T20:00:00+00:00"
 
 
 class TaskGroupTest(unittest.TestCase):
@@ -152,3 +153,61 @@ class ProgressAndDelayTest(unittest.TestCase):
     def test_empty_message_is_a_no_op(self):
         self.assertIsNone(self.parse())
         self.assertNotIn("dev-1", self.cache)
+
+
+class PoseTest(unittest.TestCase):
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries, received_at=RECEIVED):
+        return parse_location_payload(
+            self.cache, "dev-1", list(entries), received_at=received_at
+        )
+
+    def test_full_pose_matches_the_entry(self):
+        loc = self.parse(POSE)
+        self.assertEqual(loc["x"], 1.5)
+        self.assertEqual(loc["y"], 0.25)
+        self.assertEqual(loc["theta"], 0.1)
+        self.assertEqual(loc["vehicle_state"], 4)
+        self.assertEqual(loc["pose_time"], 1700000000000)
+        self.assertEqual(loc["received_at"], RECEIVED)
+
+    def test_missing_theta_is_none_not_inherited(self):
+        self.parse(POSE)
+        loc = self.parse({
+            "postureX": "1.600", "postureY": "0.300", "time": 1700000002000,
+            "type": 1, "vehicleState": 4,
+        })
+        self.assertEqual(loc["x"], 1.6)
+        self.assertIsNone(loc["theta"])
+
+    def test_invalid_xy_leaves_the_previous_pose_intact(self):
+        self.parse(POSE)
+        result = self.parse({
+            "postureX": "n/a", "postureY": "0.300", "postureTheta": "2.0",
+            "time": 1700000002000, "type": 1, "vehicleState": 5,
+        })
+        self.assertIsNone(result)
+        loc = self.cache["dev-1"]
+        self.assertEqual(
+            (loc["x"], loc["y"], loc["theta"], loc["vehicle_state"], loc["pose_time"]),
+            (1.5, 0.25, 0.1, 4, 1700000000000),
+        )
+
+    def test_last_valid_pose_in_a_batch_wins(self):
+        second = {**POSE, "postureX": "2.000", "time": 1700000002000}
+        bad = {**POSE, "postureY": None, "time": 1700000004000}
+        loc = self.parse(POSE, second, bad)
+        self.assertEqual(loc["x"], 2.0)
+        self.assertEqual(loc["pose_time"], 1700000002000)
+
+    def test_received_at_belongs_to_the_pose(self):
+        self.parse(POSE, received_at="2026-09-17T20:00:00+00:00")
+        loc = self.parse(FULL_TASK, received_at="2026-09-17T20:00:05+00:00")
+        self.assertEqual(loc["received_at"], "2026-09-17T20:00:00+00:00")
+
+    def test_same_x_different_y_is_a_new_pose(self):
+        self.parse(POSE)
+        loc = self.parse({**POSE, "postureY": "0.500"})
+        self.assertEqual((loc["x"], loc["y"]), (1.5, 0.5))
