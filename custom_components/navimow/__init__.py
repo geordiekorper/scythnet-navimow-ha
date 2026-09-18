@@ -12,6 +12,9 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
+from mower_sdk.api import MowerAPI
+from mower_sdk.errors import MowerAPIError
+from mower_sdk.sdk import NavimowSDK
 
 from .auth import NavimowOAuth2Implementation
 from .const import (
@@ -24,6 +27,7 @@ from .const import (
     MQTT_USERNAME,
     MQTT_PASSWORD,
 )
+from .coordinator import NavimowCoordinator
 from .services import async_setup_services, async_unload_services
 from .location import location_topic, parse_location_payload
 
@@ -53,13 +57,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Navimow from a config entry."""
-    # 延迟导入 mower_sdk，避免在加载 config_flow 时触发依赖导入
-    from mower_sdk.api import MowerAPI
-    from mower_sdk.errors import MowerAPIError
-    from mower_sdk.sdk import NavimowSDK
-    
-    from .coordinator import NavimowCoordinator
-    
     hass.data.setdefault(DOMAIN, {})
 
     def _mask_secret(value: str | None) -> str:

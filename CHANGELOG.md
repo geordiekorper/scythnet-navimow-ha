@@ -64,6 +64,10 @@
   seeds the shared cache, so the derived sensors follow. A restored value carries
   `is_restored: true` (and its original `received_at`) until live data of the same
   kind replaces it, and a restored pose is never used to train the dock estimate.
+- Import the SDK and the coordinator at module level instead of inside
+  `async_setup_entry`. Home Assistant imports integration modules in an executor
+  thread, so this removes the "detected blocking call" warnings the first SDK import
+  produced on the event loop at every startup.
 - SDK limits, for the record: the REST status endpoint returns only the device id,
   battery, `vehicleState` and `descriptiveCapacityRemaining`, all of which the SDK
   keeps, and no timestamp, so `rest_timestamp` is always `null`. For MQTT state
