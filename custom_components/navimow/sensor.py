@@ -181,20 +181,24 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Expose the extra real-time location fields on the zone sensor."""
-        if self.entity_description.key != "zone":
-            return None
+        """Location attributes, grouped by the message type that produces them."""
         loc = self.coordinator.get_device_location()
         if not loc:
             return None
-        return {
-            "partition_ids": loc.get("partition_ids"),
-            "task_delay": loc.get("task_delay"),
-            "vehicle_state": loc.get("vehicle_state"),
-            "pose_time": loc.get("pose_time"),
-            "mow_boundary": loc.get("mow_boundary"),
-            "mow_progress": loc.get("mow_progress"),
-        }
+        key = self.entity_description.key
+        if key == "zone":
+            # type-3 target and type-4 delay
+            return {
+                "partition_ids": loc.get("partition_ids"),
+                "task_delay": loc.get("task_delay"),
+                "vehicle_state": loc.get("vehicle_state"),
+                "pose_time": loc.get("pose_time"),
+            }
+        if key == "mowing_zone":
+            # the latest type-2 task entry, as one observation
+            task = loc.get("task")
+            return dict(task) if task else None
+        return None
 
 
 class NavimowDockSensor(NavimowSensor, RestoreSensor):

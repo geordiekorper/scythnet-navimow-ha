@@ -1,0 +1,102 @@
+"""Location parser: each type-2 task entry is one complete observation."""
+import unittest
+
+from custom_components.navimow.location import (
+    TASK_ATTRIBUTES,
+    parse_location_payload,
+)
+
+# Shapes from the X430 capture (values invented, consistent with each other).
+FULL_TASK = {
+    "action": 1, "currentMowBoundary": 2, "currentMowProgress": 5000,
+    "mapWorkPosition": "00000001000000000000000200000001", "mowStartType": 1,
+    "mowingPercentage": 50, "mowingWeekArea": "250.00", "subtotalArea": "100.00",
+    "time": 1700000000032, "type": 2,
+}
+POSE = {
+    "postureTheta": "0.100", "postureX": "1.500", "postureY": "0.250",
+    "time": 1700000000000, "type": 1, "vehicleState": 4,
+}
+
+
+class TaskGroupTest(unittest.TestCase):
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries):
+        return parse_location_payload(self.cache, "dev-1", list(entries))
+
+    def test_full_entry_converts_every_field(self):
+        loc = self.parse(FULL_TASK)
+        self.assertEqual(loc["task"], {
+            "route_progress": 5000, "mowing_percentage": 50.0,
+            "area_m2": 100.0, "week_area_m2": 250.0,
+            "action": 1, "sub_action": None, "mow_start_type": 1,
+            "map_work_position": "00000001000000000000000200000001",
+            "task_time_ms": 1700000000032,
+        })
+        self.assertEqual(tuple(loc["task"]), TASK_ATTRIBUTES)
+        # the merged keys the sensors already read are unchanged
+        self.assertEqual(loc["mow_boundary"], 2)
+        self.assertEqual(loc["mow_progress"], 5000)
+
+    def test_zero_and_negative_values_are_kept(self):
+        loc = self.parse({
+            "type": 2, "currentMowProgress": 0, "subtotalArea": "0.00",
+            "mowingPercentage": 0, "action": -1, "subAction": -1,
+        })
+        task = loc["task"]
+        self.assertEqual(task["route_progress"], 0)
+        self.assertEqual(task["area_m2"], 0.0)
+        self.assertEqual(task["mowing_percentage"], 0.0)
+        self.assertEqual(task["action"], -1)
+        self.assertEqual(task["sub_action"], -1)
+
+    def test_area_only_entry_exposes_area_without_progress(self):
+        loc = self.parse({"type": 2, "subtotalArea": "12.50"})
+        self.assertEqual(loc["task"]["area_m2"], 12.5)
+        self.assertIsNone(loc["task"]["route_progress"])
+        self.assertNotIn("mow_progress", loc)
+
+    def test_partial_entry_replaces_the_whole_group(self):
+        self.parse(FULL_TASK)
+        loc = self.parse({"type": 2, "currentMowProgress": 5100, "time": 1700000180000})
+        task = loc["task"]
+        self.assertEqual(task["route_progress"], 5100)
+        self.assertEqual(task["task_time_ms"], 1700000180000)
+        self.assertIsNone(task["area_m2"])
+        self.assertIsNone(task["action"])
+        self.assertIsNone(task["map_work_position"])
+        # merged keys keep their last value for the sensors
+        self.assertEqual(loc["mow_boundary"], 2)
+        self.assertEqual(loc["mow_progress"], 5100)
+
+    def test_pose_leaves_the_task_group_unchanged(self):
+        before = dict(self.parse(FULL_TASK)["task"])
+        loc = self.parse(POSE)
+        self.assertEqual(loc["task"], before)
+        self.assertEqual(loc["x"], 1.5)
+
+    def test_last_task_entry_in_a_batch_wins(self):
+        loc = self.parse(
+            {"type": 2, "subtotalArea": "1.00", "time": 1},
+            {"type": 2, "subtotalArea": "2.00", "time": 2},
+        )
+        self.assertEqual(loc["task"]["area_m2"], 2.0)
+        self.assertEqual(loc["task"]["task_time_ms"], 2)
+
+    def test_invalid_values_become_none(self):
+        loc = self.parse({
+            "type": 2, "currentMowProgress": "n/a", "subtotalArea": None,
+            "mowingWeekArea": "inf", "action": True, "mapWorkPosition": 7,
+        })
+        task = loc["task"]
+        self.assertIsNone(task["route_progress"])
+        self.assertIsNone(task["area_m2"])
+        self.assertIsNone(task["week_area_m2"])
+        self.assertIsNone(task["action"])
+        self.assertEqual(task["map_work_position"], "7")
+
+    def test_no_task_group_before_first_task_entry(self):
+        loc = self.parse(POSE)
+        self.assertNotIn("task", loc)

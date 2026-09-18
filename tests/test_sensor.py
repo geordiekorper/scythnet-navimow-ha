@@ -1,0 +1,80 @@
+"""Sensor attributes are grouped by the message type that produces them."""
+import unittest
+from types import SimpleNamespace
+
+from custom_components.navimow.location import parse_location_payload
+from custom_components.navimow.sensor import SENSOR_DESCRIPTIONS, NavimowSensor
+
+from tests.test_location import FULL_TASK, POSE
+
+DESCRIPTIONS = {d.key: d for d in SENSOR_DESCRIPTIONS}
+
+
+class FakeCoordinator:
+    def __init__(self):
+        self.device = SimpleNamespace(
+            id="dev-1", name="Mower", model="X430", firmware_version="1.0",
+            serial_number="SN1",
+        )
+        self.location = None
+
+    def get_device_location(self):
+        return self.location
+
+    def get_device_state(self):
+        return None
+
+    def get_dock_position(self):
+        return None
+
+
+class SensorAttributesTest(unittest.TestCase):
+    def setUp(self):
+        self.coordinator = FakeCoordinator()
+        self.cache = {}
+
+    def sensor(self, key):
+        return NavimowSensor(
+            coordinator=self.coordinator, entity_description=DESCRIPTIONS[key]
+        )
+
+    def feed(self, *entries):
+        self.coordinator.location = parse_location_payload(
+            self.cache, "dev-1", list(entries)
+        )
+
+    def test_mowing_zone_exposes_the_task_group(self):
+        self.feed(FULL_TASK)
+        sensor = self.sensor("mowing_zone")
+        self.assertEqual(sensor.native_value, 2)
+        attrs = sensor.extra_state_attributes
+        self.assertEqual(attrs["route_progress"], 5000)
+        self.assertEqual(attrs["area_m2"], 100.0)
+        self.assertEqual(attrs["week_area_m2"], 250.0)
+        self.assertEqual(attrs["task_time_ms"], 1700000000032)
+        self.assertIsNone(attrs["sub_action"])
+
+    def test_mowing_zone_has_no_attributes_before_a_task_entry(self):
+        self.feed(POSE)
+        self.assertIsNone(self.sensor("mowing_zone").extra_state_attributes)
+
+    def test_zone_no_longer_carries_task_fields(self):
+        self.feed(
+            FULL_TASK,
+            {"type": 3, "partitionIds": [2], "time": 1700000000010},
+            {"type": 4, "taskDelay": False},
+        )
+        attrs = self.sensor("zone").extra_state_attributes
+        self.assertEqual(attrs["partition_ids"], [2])
+        self.assertIs(attrs["task_delay"], False)
+        self.assertNotIn("mow_boundary", attrs)
+        self.assertNotIn("mow_progress", attrs)
+
+    def test_other_sensors_have_no_attributes(self):
+        self.feed(FULL_TASK, POSE)
+        for key in ("position_x", "position_y", "heading", "mow_progress"):
+            self.assertIsNone(self.sensor(key).extra_state_attributes, key)
+
+    def test_no_location_means_no_attributes(self):
+        for key in ("zone", "mowing_zone"):
+            self.assertIsNone(self.sensor(key).extra_state_attributes, key)

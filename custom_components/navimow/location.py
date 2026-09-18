@@ -7,8 +7,10 @@ integration can expose live position and the current mowing zone.
 
 Observed payload: a JSON array of objects keyed by ``type``:
   type 1  pose     {postureX, postureY (meters), postureTheta (radians), vehicleState, time}
-  type 2  progress {currentMowBoundary (live physical partition id), currentMowProgress
-                    (route progress 0-10000, reaches 10000 at completion), mapWorkPosition}
+  type 2  task     {currentMowBoundary (live physical partition id), currentMowProgress
+                    (route progress 0-10000, reaches 10000 at completion), mowingPercentage,
+                    subtotalArea / mowingWeekArea (m2, sent as strings), action, subAction,
+                    mowStartType, mapWorkPosition (128-hex string), time (ms)}
   type 3  zone     {partitionIds: [int]}   -> the TARGET partition (set at task start;
                     absent for a "mow all" command)
   type 4  delay    {taskDelay: bool}       -> rain / schedule delay
@@ -19,7 +21,8 @@ RTK reference (NOT latitude/longitude).
 """
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Any, Callable
 
 
 def location_topic(device_id: str) -> str:
@@ -53,6 +56,55 @@ def update_dock_estimate(
         "y": (d["y"] * n + float(y)) / (n + 1),
         "n": n + 1,
     }
+
+
+def _num(value: Any) -> float | None:
+    """Vendor number (often sent as a string such as "100.00") as float, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _int(value: Any) -> int | None:
+    """Vendor integer (int, float or numeric string) as int, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _str(value: Any) -> str | None:
+    """Vendor string kept as sent; not decoded."""
+    return None if value is None else str(value)
+
+
+# Type-2 task entry: (vendor key, attribute name, converter). Every key is read
+# from the same entry so the group is one observation; keys absent from the
+# entry are None rather than borrowed from an earlier entry.
+TASK_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
+    ("currentMowProgress", "route_progress", _int),
+    ("mowingPercentage", "mowing_percentage", _num),
+    ("subtotalArea", "area_m2", _num),
+    ("mowingWeekArea", "week_area_m2", _num),
+    ("action", "action", _int),
+    ("subAction", "sub_action", _int),
+    ("mowStartType", "mow_start_type", _int),
+    ("mapWorkPosition", "map_work_position", _str),
+    ("time", "task_time_ms", _int),
+)
+
+TASK_ATTRIBUTES: tuple[str, ...] = tuple(attr for _, attr, _ in TASK_FIELDS)
+
+
+def parse_task_entry(item: dict) -> dict[str, Any]:
+    """One type-2 entry as a complete task observation (see TASK_FIELDS)."""
+    return {attr: conv(item.get(key)) for key, attr, conv in TASK_FIELDS}
 
 
 def parse_location_payload(
@@ -93,6 +145,10 @@ def parse_location_payload(
                 loc["mow_boundary"] = item.get("currentMowBoundary")
             if "currentMowProgress" in item:
                 loc["mow_progress"] = item.get("currentMowProgress")
+            # The full task report, replaced whole per entry. The mower may
+            # repeat the previous task's totals in the first entry of a new
+            # task; task_time_ms tells the entries apart.
+            loc["task"] = parse_task_entry(item)
             changed = True
         elif t == 3:
             pids = item.get("partitionIds")

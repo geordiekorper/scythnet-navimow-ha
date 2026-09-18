@@ -33,7 +33,7 @@ mower is active):
 | `sensor.<mower>_position_x` | X position in meters (local grid; origin = the RTK/mapping reference, usually *near* the dock) |
 | `sensor.<mower>_position_y` | Y position in meters |
 | `sensor.<mower>_heading` | Mower orientation in degrees (0–360) |
-| `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too) |
+| `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too). Attributes carry the rest of the mower's task report: `route_progress` (0–10000), `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`, `mow_start_type`, `map_work_position`, `task_time_ms` |
 | `sensor.<mower>_mow_progress` | Planned-route progress for the current zone, 0–10000 (10000 = zone complete; not the app's coverage %) |
 | `sensor.<mower>_dock_x` / `_dock_y` | Dock position in meters — auto-learned by averaging the mower's pose while docked/charging; survives restarts. `unknown` until the mower has docked once. Used by the example map card to place the dock marker (the coordinate origin is **not** reliably the dock) |
 

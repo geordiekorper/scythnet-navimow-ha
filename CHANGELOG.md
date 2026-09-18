@@ -15,6 +15,15 @@
 - Log follow-up refresh failures without failing submitted actions; start reauthentication
   immediately when command authentication fails.
 - Remove the actions when the last integration entry unloads and restore them on reload.
+- Keep the mower's full `type:2` task report as attributes on `sensor.<mower>_mowing_zone`:
+  `route_progress`, `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`,
+  `mow_start_type`, `map_work_position` (kept as sent, not decoded) and `task_time_ms`.
+  Each task entry replaces the whole group; fields the entry does not carry read `null`.
+  The mower can repeat the previous task's totals in the first entry of a new task;
+  compare `task_time_ms` to tell entries apart.
+- **Breaking:** `mow_boundary` and `mow_progress` are no longer attributes of
+  `sensor.<mower>_zone`. Read the `mowing_zone` and `mow_progress` sensors instead
+  (or `route_progress` on the mowing-zone sensor for the raw 0–10000 value).
 
 ## 1.1.0+scythnet.1 (test build)
 
