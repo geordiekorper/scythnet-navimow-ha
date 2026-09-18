@@ -22,6 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
+from .location import progress_percent
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -107,10 +108,7 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         icon="mdi:progress-check",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda c: (
-            (loc.get("mow_progress") or 0) / 100
-            if (loc := c.get_device_location()) else None
-        ),
+        value_fn=lambda c: progress_percent(c.get_device_location())[0],
     ),
 )
 
@@ -198,6 +196,8 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
             # the latest type-2 task entry, as one observation
             task = loc.get("task")
             return dict(task) if task else None
+        if key == "mow_progress":
+            return {"progress_source": progress_percent(loc)[1]}
         return None
 
 

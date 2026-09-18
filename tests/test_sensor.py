@@ -72,9 +72,24 @@ class SensorAttributesTest(unittest.TestCase):
 
     def test_other_sensors_have_no_attributes(self):
         self.feed(FULL_TASK, POSE)
-        for key in ("position_x", "position_y", "heading", "mow_progress"):
+        for key in ("position_x", "position_y", "heading"):
             self.assertIsNone(self.sensor(key).extra_state_attributes, key)
 
+    def test_progress_is_unknown_until_a_task_report(self):
+        self.feed(POSE)
+        sensor = self.sensor("mow_progress")
+        self.assertIsNone(sensor.native_value)
+        self.assertEqual(sensor.extra_state_attributes, {"progress_source": "none"})
+
+    def test_progress_names_its_source(self):
+        self.feed({"type": 2, "mowingPercentage": 12})
+        sensor = self.sensor("mow_progress")
+        self.assertEqual(sensor.native_value, 12.0)
+        self.assertEqual(sensor.extra_state_attributes["progress_source"], "percentage")
+        self.feed(FULL_TASK)
+        self.assertEqual(sensor.native_value, 50.0)
+        self.assertEqual(sensor.extra_state_attributes["progress_source"], "route")
+
     def test_no_location_means_no_attributes(self):
-        for key in ("zone", "mowing_zone"):
+        for key in ("zone", "mowing_zone", "mow_progress"):
             self.assertIsNone(self.sensor(key).extra_state_attributes, key)

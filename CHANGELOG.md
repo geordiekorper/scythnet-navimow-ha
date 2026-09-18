@@ -24,6 +24,12 @@
 - **Breaking:** `mow_boundary` and `mow_progress` are no longer attributes of
   `sensor.<mower>_zone`. Read the `mowing_zone` and `mow_progress` sensors instead
   (or `route_progress` on the mowing-zone sensor for the raw 0–10000 value).
+- Report `sensor.<mower>_mow_progress` as `unknown` until the mower sends a task
+  report, instead of a manufactured 0 %. Fall back to the mower's `mowingPercentage`
+  when route progress is missing, and name the field used in a `progress_source`
+  attribute (`route`, `percentage` or `none`). A reported zero still shows 0 %.
+- Keep the last `task_delay` value when a `type:4` entry arrives without `taskDelay`
+  (the shape sent on MQTT reconnect); it used to clear the flag.
 
 ## 1.1.0+scythnet.1 (test build)
 

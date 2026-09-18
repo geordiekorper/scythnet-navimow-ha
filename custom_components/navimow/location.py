@@ -107,6 +107,26 @@ def parse_task_entry(item: dict) -> dict[str, Any]:
     return {attr: conv(item.get(key)) for key, attr, conv in TASK_FIELDS}
 
 
+def progress_percent(loc: dict | None) -> tuple[float | None, str]:
+    """Route progress as a percentage, with the field it came from.
+
+    ``currentMowProgress`` (0-10000, kept in ``mow_progress``) wins;
+    ``mowingPercentage`` from the latest task entry is the fallback; with
+    neither the value is None (unknown), never a manufactured zero. A
+    reported zero stays 0.0. The source is ``route``, ``percentage`` or
+    ``none``.
+    """
+    if not loc:
+        return None, "none"
+    route = _int(loc.get("mow_progress"))
+    if route is not None:
+        return route / 100, "route"
+    pct = _num((loc.get("task") or {}).get("mowing_percentage"))
+    if pct is not None:
+        return pct, "percentage"
+    return None, "none"
+
+
 def parse_location_payload(
     cache: dict[str, dict], device_id: str, data: Any
 ) -> dict | None:
@@ -156,8 +176,12 @@ def parse_location_payload(
             loc["partition"] = pids[0] if isinstance(pids, list) and pids else None
             changed = True
         elif t == 4:
-            loc["task_delay"] = item.get("taskDelay")
-            changed = True
+            # Only a real delay report updates the flag. The reconnect-time
+            # shape {"time", "type": 4, "vehicleState"} carries no taskDelay
+            # and must not clear the last value; the pose carries the state.
+            if "taskDelay" in item:
+                loc["task_delay"] = item.get("taskDelay")
+                changed = True
     if not changed:
         return None
     cache[device_id] = loc

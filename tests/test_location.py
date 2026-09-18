@@ -4,6 +4,7 @@ import unittest
 from custom_components.navimow.location import (
     TASK_ATTRIBUTES,
     parse_location_payload,
+    progress_percent,
 )
 
 # Shapes from the X430 capture (values invented, consistent with each other).
@@ -100,3 +101,54 @@ class TaskGroupTest(unittest.TestCase):
     def test_no_task_group_before_first_task_entry(self):
         loc = self.parse(POSE)
         self.assertNotIn("task", loc)
+
+
+class ProgressAndDelayTest(unittest.TestCase):
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries):
+        return parse_location_payload(self.cache, "dev-1", list(entries))
+
+    def test_pose_only_gives_unknown_progress(self):
+        self.assertEqual(progress_percent(self.parse(POSE)), (None, "none"))
+
+    def test_no_location_gives_unknown_progress(self):
+        self.assertEqual(progress_percent(None), (None, "none"))
+
+    def test_route_progress_zero_is_zero_percent(self):
+        loc = self.parse({"type": 2, "currentMowProgress": 0})
+        self.assertEqual(progress_percent(loc), (0.0, "route"))
+
+    def test_route_progress_scales_to_percent(self):
+        loc = self.parse({"type": 2, "currentMowProgress": 2500})
+        self.assertEqual(progress_percent(loc), (25.0, "route"))
+
+    def test_percentage_is_the_fallback(self):
+        loc = self.parse({"type": 2, "mowingPercentage": 12})
+        self.assertEqual(progress_percent(loc), (12.0, "percentage"))
+
+    def test_route_progress_wins_over_percentage(self):
+        loc = self.parse({"type": 2, "currentMowProgress": 5000, "mowingPercentage": 12})
+        self.assertEqual(progress_percent(loc), (50.0, "route"))
+
+    def test_status_only_delay_entry_keeps_the_last_delay(self):
+        self.parse({"type": 4, "taskDelay": True})
+        self.assertIsNone(self.parse({"time": 1700000060000, "type": 4, "vehicleState": 1}))
+        self.assertIs(self.cache["dev-1"]["task_delay"], True)
+        loc = self.parse({"type": 4, "taskDelay": False})
+        self.assertIs(loc["task_delay"], False)
+
+    def test_status_only_delay_next_to_a_pose_is_ignored(self):
+        self.parse({"type": 4, "taskDelay": True})
+        loc = self.parse({"time": 1700000060000, "type": 4, "vehicleState": 1}, POSE)
+        self.assertIs(loc["task_delay"], True)
+        self.assertEqual(loc["x"], 1.5)
+
+    def test_status_only_delay_alone_is_a_no_op(self):
+        self.assertIsNone(self.parse({"time": 1, "type": 4, "vehicleState": 1}))
+        self.assertNotIn("dev-1", self.cache)
+
+    def test_empty_message_is_a_no_op(self):
+        self.assertIsNone(self.parse())
+        self.assertNotIn("dev-1", self.cache)
