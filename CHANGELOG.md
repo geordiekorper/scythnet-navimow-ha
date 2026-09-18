@@ -52,6 +52,10 @@
   update as `mqtt_cache`, and after an HTTP fallback the next poll reverted the mower
   state to the stale cached MQTT message. A cached message is now adopted once, and
   the state and its label change only when a newer message or a REST result arrives.
+- Stop generating long-term statistics for `sensor.<mower>_position_x` and
+  `_position_y` (their `state_class` is removed): an hourly mean of a coordinate means
+  nothing, and the rows were never purged. Existing statistics stay until removed under
+  Developer Tools → Statistics. History and the entity graph are unaffected.
 - SDK limits, for the record: the REST status endpoint returns only the device id,
   battery, `vehicleState` and `descriptiveCapacityRemaining`, all of which the SDK
   keeps, and no timestamp, so `rest_timestamp` is always `null`. For MQTT state

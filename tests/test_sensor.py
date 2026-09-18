@@ -137,6 +137,13 @@ class SensorAttributesTest(unittest.TestCase):
         )
         self.assertEqual(sensor.entity_description.entity_category, "diagnostic")
 
+    def test_coordinates_and_heading_produce_no_statistics(self):
+        # A mean position or a mean of a 0-360 heading is meaningless, so
+        # these sensors carry no state_class and HA computes no statistics.
+        for key in ("position_x", "position_y", "heading"):
+            self.assertIsNone(DESCRIPTIONS[key].state_class, key)
+        self.assertEqual(DESCRIPTIONS["mow_progress"].state_class, "measurement")
+
     def test_no_location_means_no_attributes(self):
         for key in ("zone", "mowing_zone", "mow_progress", "position_x"):
             self.assertIsNone(self.sensor(key).extra_state_attributes, key)

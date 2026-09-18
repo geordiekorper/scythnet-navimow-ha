@@ -55,14 +55,12 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         key="position_x",
         name="Position X",
         native_unit_of_measurement="m",
-        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda c: (loc.get("x") if (loc := c.get_device_location()) else None),
     ),
     NavimowSensorEntityDescription(
         key="position_y",
         name="Position Y",
         native_unit_of_measurement="m",
-        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda c: (loc.get("y") if (loc := c.get_device_location()) else None),
     ),
     NavimowSensorEntityDescription(
