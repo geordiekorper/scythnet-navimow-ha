@@ -75,6 +75,30 @@
   signal strength, position and error; other keys are dropped before the integration
   sees them.
 
+## [1.2.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.1.0...NavimowHA-v1.2.0) (2026-09-18)
+
+
+### Features
+
+* atomic latest pose with receipt time on the position-X sensor ([e8c608b](https://github.com/geordiekorper/scythnet-navimow-ha/commit/e8c608b788b2e1c159478fab4a189483f29817b7))
+* diagnostic data-source sensor with separate MQTT and REST snapshots ([d61a777](https://github.com/geordiekorper/scythnet-navimow-ha/commit/d61a777879ede56990b348e82e5359b3c6cdf489))
+* **gate:** add keep-open override to prevent automated gate closing ([fc7a2fe](https://github.com/geordiekorper/scythnet-navimow-ha/commit/fc7a2fe0a3fe6aafc958ac734a26f090e009ace3))
+* keep the full type-2 task report as mowing-zone attributes ([2c69edb](https://github.com/geordiekorper/scythnet-navimow-ha/commit/2c69edb3c5201981712957798fc6781c4888dd20))
+* restore location sensors across restarts ([33dd4c8](https://github.com/geordiekorper/scythnet-navimow-ha/commit/33dd4c8b37aa613ad4d5f522c89e83b6de187450))
+* **sensor:** mow_progress unit % and 0-100 scaling ([86c404e](https://github.com/geordiekorper/scythnet-navimow-ha/commit/86c404eea195897f1265dfa9891b7f0cd5184da0))
+* smooth mower marker animation on map card ([a4bd2f4](https://github.com/geordiekorper/scythnet-navimow-ha/commit/a4bd2f48ed5087fc8a27552d2e936743b1463e0d))
+
+
+### Bug Fixes
+
+* handle assumed-open when gate stuck in Opening due to wind ([297b242](https://github.com/geordiekorper/scythnet-navimow-ha/commit/297b2425df3437eaabedf8e68012a70c7be87e22))
+* import the SDK and coordinator at module level ([5d4b8ba](https://github.com/geordiekorper/scythnet-navimow-ha/commit/5d4b8baabe995a4444aa97316ffcec9c1cc9360c))
+* prevent spurious gate open on backyard-only mow ([bcb4eb2](https://github.com/geordiekorper/scythnet-navimow-ha/commit/bcb4eb2b3394651d4c5165010d200c25f142a0de))
+* stop long-term statistics for the position sensors ([d52361e](https://github.com/geordiekorper/scythnet-navimow-ha/commit/d52361ecac47069b63fd7cc4c82718b1306d08a7))
+* unknown progress without a task report; keep delay on status-only entries ([7609893](https://github.com/geordiekorper/scythnet-navimow-ha/commit/7609893cba05842ee9d38d4e891f5782eb560d3b))
+* use entity targets and shared handling for mower commands ([6f8bbe0](https://github.com/geordiekorper/scythnet-navimow-ha/commit/6f8bbe0d53da42ecda6311a45bf00c260a584980))
+* zone display, mow_progress %, in_transit threshold, MQTT hook race ([1380b02](https://github.com/geordiekorper/scythnet-navimow-ha/commit/1380b02257c1489215df2335851e0cf851a3016f))
+
 ## 1.1.0+scythnet.1 (test build)
 
 - Add explicit Navimow resume and stop actions using Home Assistant device IDs.
