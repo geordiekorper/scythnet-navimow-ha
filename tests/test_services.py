@@ -21,7 +21,7 @@ from custom_components.navimow.services import (
 )
 
 
-class TestMower(LawnMowerEntity):
+class FakeMower(LawnMowerEntity):
     _attr_should_poll = False
     async_resume = NavimowLawnMower.async_resume
     async_stop = NavimowLawnMower.async_stop
@@ -47,14 +47,14 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         dr.async_setup(self.hass)
         await dr.async_load(self.hass)
         await er.async_load(self.hass)
-        self.first = TestMower(self.hass, 'lawn_mower.navimow_x430', 'vendor-1')
-        self.second = TestMower(self.hass, 'lawn_mower.navimow_x430_2', 'vendor-2')
+        self.first = FakeMower(self.hass, 'lawn_mower.navimow_x430', 'vendor-1')
+        self.second = FakeMower(self.hass, 'lawn_mower.navimow_x430_2', 'vendor-2')
         self.platforms = []
         self.platform = self.make_platform('navimow', 'lawn_mower')
         await self.platform.async_add_entities([self.first, self.second])
-        self.foreign = TestMower(self.hass, 'lawn_mower.other_brand', 'foreign')
+        self.foreign = FakeMower(self.hass, 'lawn_mower.other_brand', 'foreign')
         await self.make_platform('other_brand', 'lawn_mower').async_add_entities([self.foreign])
-        self.sensor = TestMower(self.hass, 'sensor.battery', 'sensor')
+        self.sensor = FakeMower(self.hass, 'sensor.battery', 'sensor')
         await self.make_platform('navimow', 'sensor').async_add_entities([self.sensor])
         self.assertEqual(len(self.platform.entities), 2)
         self.hass.data['navimow'] = {'entry': {}}
@@ -91,7 +91,7 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_renamed_entity(self):
         await self.platform.async_remove_entity(self.first.entity_id)
-        self.first = TestMower(self.hass, 'lawn_mower.front_lawn', 'vendor-1')
+        self.first = FakeMower(self.hass, 'lawn_mower.front_lawn', 'vendor-1')
         await self.platform.async_add_entities([self.first])
         await self.call('resume', self.first.entity_id)
         self.first._api.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.RESUME)
@@ -115,7 +115,7 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.hass.services.has_service('navimow', 'resume'))
         self.assertFalse(self.hass.services.has_service('navimow', 'stop'))
         await self.platform.async_remove_entity(old.entity_id)
-        self.first = TestMower(self.hass, old.entity_id, 'vendor-1')
+        self.first = FakeMower(self.hass, old.entity_id, 'vendor-1')
         await self.platform.async_add_entities([self.first])
         self.hass.data['navimow']['entry'] = {}
         async_setup_services(self.hass)
