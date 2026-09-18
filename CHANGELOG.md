@@ -5,6 +5,13 @@
 > and the original [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
 > Fork releases are listed first; upstream history follows.
 
+## [1.2.1](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.2.0...NavimowHA-v1.2.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* distinguish no-target and mow-all from unknown in the zone sensor ([66d8355](https://github.com/geordiekorper/scythnet-navimow-ha/commit/66d8355d1d185a259d29fda4c34eddadfa79cb19))
+
 ## [1.2.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.1.0...NavimowHA-v1.2.0) (2026-09-18)
 
 
