@@ -23,7 +23,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
-from .location import POSE_SOURCE, progress_percent, restore_location_groups
+from .location import (
+    POSE_SOURCE,
+    progress_percent,
+    restore_location_groups,
+    target_zone,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -48,8 +53,9 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         key="zone",
         name="Zone",
         icon="mdi:map-marker",
-        value_fn=lambda c: (
-            loc.get("partition") if (loc := c.get_device_location()) else None
+        value_fn=lambda c: target_zone(
+            c.get_device_location(),
+            state.state if (state := c.get_device_state()) else None,
         ),
     ),
     NavimowSensorEntityDescription(

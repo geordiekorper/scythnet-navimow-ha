@@ -111,6 +111,8 @@ template:
               {% set ns.parts = ns.parts + [names.get(pid | string, pid | string)] %}
             {% endfor %}
             {{ ns.parts | join(', ') }}{% if pids | length > 1 %} (order unknown){% endif %}
+          {% elif is_state('sensor.peter_griffin_zone', 'all') %}
+            All zones
           {% else %}
             None / idle
           {% endif %}

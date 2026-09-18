@@ -184,6 +184,33 @@ def restore_location_groups(
     return []
 
 
+# Target-zone sensor states beyond a partition id. The mower never reports
+# "mow all": it sends the same empty target report whether it is idle or mowing
+# everything, so TARGET_ALL is inferred from the mower's activity.
+TARGET_NONE = "none"
+TARGET_ALL = "all"
+# Activities during which an empty target means a mow-all task is under way.
+# "returning" is excluded: a dock command clears the target for the trip home.
+MOW_ALL_ACTIVITIES = frozenset({"mowing", "paused"})
+
+
+def target_zone(loc: dict | None, activity: str | None) -> int | str | None:
+    """State of the target-zone sensor.
+
+    None (unknown) until a target report has been received; the first
+    partition id when the report names zones; otherwise TARGET_ALL while the
+    mower is mowing or paused, and TARGET_NONE when it is not.
+    """
+    if not loc or "partition_ids" not in loc:
+        return None
+    partition = loc.get("partition")
+    if partition is not None:
+        return partition
+    if (activity or "").lower() in MOW_ALL_ACTIVITIES:
+        return TARGET_ALL
+    return TARGET_NONE
+
+
 def progress_percent(loc: dict | None) -> tuple[float | None, str]:
     """Route progress as a percentage, with the field it came from.
 

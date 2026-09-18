@@ -26,12 +26,13 @@ class FakeCoordinator:
             serial_number="SN1",
         )
         self.location = None
+        self.state = None  # a DeviceStateMessage-like object, or None
 
     def get_device_location(self):
         return self.location
 
     def get_device_state(self):
-        return None
+        return self.state
 
     def get_dock_position(self):
         return None
@@ -183,6 +184,23 @@ class SensorAttributesTest(unittest.TestCase):
         self.feed(FULL_TASK, POSE, {"type": 3, "partitionIds": [2], "time": 1})
         for key in RESTORING_KEYS:
             self.assertFalse(self.sensor(key).extra_state_attributes["is_restored"], key)
+
+    def test_zone_state_follows_target_and_activity(self):
+        sensor = self.sensor("zone")
+        self.assertIsNone(sensor.native_value)
+        self.feed(POSE)
+        self.assertIsNone(sensor.native_value)  # no target report yet
+        self.feed({"time": 1700000242000, "type": 3})
+        self.assertEqual(sensor.native_value, "none")  # docked, no state yet
+        self.coordinator.state = SimpleNamespace(state="mowing")
+        self.assertEqual(sensor.native_value, "all")
+        self.coordinator.state = SimpleNamespace(state="paused")
+        self.assertEqual(sensor.native_value, "all")
+        self.coordinator.state = SimpleNamespace(state="returning")
+        self.assertEqual(sensor.native_value, "none")
+        self.feed({"partitionIds": [2], "time": 1700000000010, "type": 3})
+        self.assertEqual(sensor.native_value, 2)
+        self.assertEqual(sensor.extra_state_attributes["partition_ids"], [2])
 
     def test_no_location_means_no_attributes(self):
         for key in ("zone", "mowing_zone", "mow_progress", "position_x"):

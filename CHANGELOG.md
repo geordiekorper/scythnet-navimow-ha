@@ -29,6 +29,18 @@
 * use entity targets and shared handling for mower commands ([6f8bbe0](https://github.com/geordiekorper/scythnet-navimow-ha/commit/6f8bbe0d53da42ecda6311a45bf00c260a584980))
 * zone display, mow_progress %, in_transit threshold, MQTT hook race ([1380b02](https://github.com/geordiekorper/scythnet-navimow-ha/commit/1380b02257c1489215df2335851e0cf851a3016f))
 
+## Unreleased
+
+- `sensor.<mower>_zone` now distinguishes the mower's empty target reports: `all`
+  while it mows or pauses with no named zone (a "mow all" task), `none` when it
+  reports no target and is not mowing, and `unknown` only until the first target
+  report. Previously all three read `unknown`. `all` is inferred from the mower's
+  activity, since the mower sends the same empty report in both cases; a charging
+  break during a mow-all reads `none` until the mower resumes. Templates that
+  compared the zone state to `unknown` should compare to `none` or `all`; the
+  `partition_ids` attribute is unchanged, so the gate example needed no change
+  beyond showing "All zones" in its friendly-name sensor.
+
 ## 1.2.0 in detail
 
 The generated entry above lists the commits; this section describes what they mean for a user.

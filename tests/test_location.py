@@ -6,6 +6,7 @@ from custom_components.navimow.location import (
     parse_location_payload,
     progress_percent,
     restore_location_groups,
+    target_zone,
 )
 
 # Shapes from the X430 capture (values invented, consistent with each other).
@@ -298,3 +299,41 @@ class RestoreTest(unittest.TestCase):
         cache = {"dev-1": {"device_id": "dev-1", "task_delay": True, "delay_restored": True}}
         self.assertIsNone(parse_location_payload(cache, "dev-1", [{"time": 1, "type": 4, "vehicleState": 1}]))
         self.assertTrue(cache["dev-1"]["delay_restored"])
+
+
+class TargetZoneTest(unittest.TestCase):
+    NO_TARGET = {"time": 1700000242000, "type": 3}
+    ZONE_2 = {"partitionIds": [2], "time": 1700000000010, "type": 3}
+
+    def parse(self, *entries):
+        return parse_location_payload({}, "dev-1", list(entries))
+
+    def test_unknown_until_a_target_report_arrives(self):
+        self.assertIsNone(target_zone(None, "mowing"))
+        self.assertIsNone(target_zone(self.parse(POSE), "mowing"))
+
+    def test_named_target_is_the_first_id(self):
+        loc = self.parse({"partitionIds": [7, 19], "time": 1, "type": 3})
+        self.assertEqual(target_zone(loc, "mowing"), 7)
+        self.assertEqual(target_zone(loc, "docked"), 7)
+
+    def test_empty_target_while_mowing_or_paused_is_all(self):
+        loc = self.parse(self.NO_TARGET)
+        self.assertEqual(target_zone(loc, "mowing"), "all")
+        self.assertEqual(target_zone(loc, "paused"), "all")
+        self.assertEqual(target_zone(loc, "Mowing"), "all")
+
+    def test_empty_target_otherwise_is_none(self):
+        loc = self.parse(self.NO_TARGET)
+        for activity in ("docked", "charging", "idle", "returning", "error", "", None):
+            self.assertEqual(target_zone(loc, activity), "none", activity)
+
+    def test_empty_list_counts_as_no_target(self):
+        loc = self.parse({"partitionIds": [], "time": 1, "type": 3})
+        self.assertEqual(target_zone(loc, "docked"), "none")
+
+    def test_dock_command_clears_a_named_target(self):
+        cache = {}
+        parse_location_payload(cache, "dev-1", [self.ZONE_2])
+        loc = parse_location_payload(cache, "dev-1", [self.NO_TARGET])
+        self.assertEqual(target_zone(loc, "returning"), "none")

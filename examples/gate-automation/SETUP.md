@@ -65,10 +65,12 @@ mower works each area (or send a "mow this zone" command per zone) and record wh
 id is which. Note which zone(s) are on the **dock side** (no gate needed) — usually
 just the one containing the dock.
 
-> **"Mow all" note:** a full-property / "mow all" command reports **no zone** — the
-> sensor stays `unknown` the whole time. Only per-zone commands report a specific
-> id. The gate logic therefore treats anything that isn't a known dock-side zone
-> (including `unknown`) as gate-required, so "mow all" opens the gate too.
+> **"Mow all" note:** a full-property / "mow all" command reports **no zone**. Only
+> per-zone commands report a specific id. The sensor shows `all` while the mower
+> mows or pauses without a named zone, `none` when it is idle or returning, and
+> `unknown` only until the first target report arrives. The gate logic reads the
+> `partition_ids` attribute and treats anything that isn't a known dock-side zone
+> (including an empty list) as gate-required, so "mow all" opens the gate too.
 
 ## Step 4 — Configure the package
 
