@@ -129,6 +129,61 @@ def parse_task_entry(item: dict) -> dict[str, Any]:
     return {attr: conv(item.get(key)) for key, attr, conv in TASK_FIELDS}
 
 
+# Restore groups. Each location sensor restores its last recorded state on
+# startup into the shared cache under one of these groups; the record then
+# carries "<group>_restored": True until the first live entry of the same
+# type replaces it (the parser pops the marker).
+RESTORE_GROUPS = ("pose", "task", "progress", "target", "delay")
+
+
+def restore_location_groups(
+    key: str, state: str | None, attributes: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Cache fields to seed from a sensor's last recorded state, by sensor key.
+
+    Returns (group, fields) pairs; empty when the last state holds nothing
+    usable (for example ``unknown`` with no attributes).
+    """
+    attrs = attributes or {}
+    if key == "position_x":
+        x, y = _num(state), _num(attrs.get("y"))
+        if x is None or y is None:
+            return []
+        return [("pose", {
+            "x": x,
+            "y": y,
+            "theta": _num(attrs.get("theta_rad")),
+            "vehicle_state": _int(attrs.get("vehicle_state")),
+            "pose_time": _int(attrs.get("pose_time_ms")),
+            "received_at": _str(attrs.get("received_at")),
+        })]
+    if key == "mowing_zone":
+        fields: dict[str, Any] = {}
+        boundary = _int(state)
+        if boundary is not None:
+            fields["mow_boundary"] = boundary
+        if any(attr in attrs for attr in TASK_ATTRIBUTES):
+            fields["task"] = {attr: attrs.get(attr) for attr in TASK_ATTRIBUTES}
+        return [("task", fields)] if fields else []
+    if key == "mow_progress":
+        pct = _num(state)
+        if pct is None or attrs.get("progress_source") != "route":
+            return []  # a percentage fallback is restored with the task group
+        return [("progress", {"mow_progress": int(round(pct * 100))})]
+    if key == "zone":
+        groups: list[tuple[str, dict[str, Any]]] = []
+        if "partition_ids" in attrs:
+            pids = attrs.get("partition_ids")
+            groups.append(("target", {
+                "partition_ids": pids,
+                "partition": pids[0] if isinstance(pids, list) and pids else None,
+            }))
+        if "task_delay" in attrs:
+            groups.append(("delay", {"task_delay": attrs.get("task_delay")}))
+        return groups
+    return []
+
+
 def progress_percent(loc: dict | None) -> tuple[float | None, str]:
     """Route progress as a percentage, with the field it came from.
 
@@ -177,6 +232,7 @@ def parse_location_payload(
                 continue  # unusable X/Y: the previous pose stays untouched
             loc.update(pose)  # replaced whole; the last valid entry wins
             loc["received_at"] = received_at
+            loc.pop("pose_restored", None)
             changed = True
         elif t == 2:
             # Live physical-mowing progress. currentMowBoundary is the
@@ -187,15 +243,18 @@ def parse_location_payload(
                 loc["mow_boundary"] = item.get("currentMowBoundary")
             if "currentMowProgress" in item:
                 loc["mow_progress"] = item.get("currentMowProgress")
+                loc.pop("progress_restored", None)
             # The full task report, replaced whole per entry. The mower may
             # repeat the previous task's totals in the first entry of a new
             # task; task_time_ms tells the entries apart.
             loc["task"] = parse_task_entry(item)
+            loc.pop("task_restored", None)
             changed = True
         elif t == 3:
             pids = item.get("partitionIds")
             loc["partition_ids"] = pids
             loc["partition"] = pids[0] if isinstance(pids, list) and pids else None
+            loc.pop("target_restored", None)
             changed = True
         elif t == 4:
             # Only a real delay report updates the flag. The reconnect-time
@@ -203,6 +262,7 @@ def parse_location_payload(
             # and must not clear the last value; the pose carries the state.
             if "taskDelay" in item:
                 loc["task_delay"] = item.get("taskDelay")
+                loc.pop("delay_restored", None)
                 changed = True
     if not changed:
         return None

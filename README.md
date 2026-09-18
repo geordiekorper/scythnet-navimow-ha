@@ -160,8 +160,12 @@ After setup you should see:
 - `zone`, `position_x`, `position_y`, `heading`, `mowing_zone`, `mow_progress`,
   `dock_x`, `dock_y`, and a diagnostic `data_source` sensor (this fork)
 
-The position/zone sensors show `unknown` while docked and begin updating once
-the mower starts moving. The dock sensors are the opposite: they learn (and
+While docked the mower still reports a pose every few minutes, so the position
+and heading sensors stay populated; the target-zone sensor reads `unknown` while
+there is no active target, and the task sensors (`mowing_zone`, `mow_progress`)
+update only during a mow. On startup each of these sensors restores its last
+recorded value and marks it `is_restored: true` until live data of the same kind
+replaces it, so a restart no longer blanks them. The dock sensors learn (and
 refine) the dock position *while* the mower sits docked/charging, keep their
 value across restarts, and read `unknown` only until the first docking after
 install — their `samples`/`source` attributes show the learning state.

@@ -56,6 +56,14 @@
   `_position_y` (their `state_class` is removed): an hourly mean of a coordinate means
   nothing, and the rows were never purged. Existing statistics stay until removed under
   Developer Tools → Statistics. History and the entity graph are unaffected.
+- Restore the location sensors across restarts. The location cache lived only in
+  memory, so after every restart `position_x`/`_y`, `heading`, `mowing_zone`,
+  `mow_progress` and `zone` read `unknown` until their message type arrived again:
+  up to five minutes for a docked pose, and not before the next mow for the task
+  report. Each of these sensors now restores its last recorded state on startup and
+  seeds the shared cache, so the derived sensors follow. A restored value carries
+  `is_restored: true` (and its original `received_at`) until live data of the same
+  kind replaces it, and a restored pose is never used to train the dock estimate.
 - SDK limits, for the record: the REST status endpoint returns only the device id,
   battery, `vehicleState` and `descriptiveCapacityRemaining`, all of which the SDK
   keeps, and no timestamp, so `rest_timestamp` is always `null`. For MQTT state

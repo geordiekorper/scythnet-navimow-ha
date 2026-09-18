@@ -18,11 +18,12 @@ from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import NavimowCoordinator
-from .location import POSE_SOURCE, progress_percent
+from .location import POSE_SOURCE, progress_percent, restore_location_groups
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -132,11 +133,12 @@ async def async_setup_entry(
     for device in devices:
         coordinator = coordinators[device.id]
         for description in SENSOR_DESCRIPTIONS:
-            cls = (
-                NavimowDockSensor
-                if description.key in ("dock_x", "dock_y")
-                else NavimowSensor
-            )
+            if description.key in ("dock_x", "dock_y"):
+                cls = NavimowDockSensor
+            elif description.key in RESTORING_KEYS:
+                cls = NavimowLocationSensor
+            else:
+                cls = NavimowSensor
             entities.append(
                 cls(
                     coordinator=coordinator,
@@ -144,6 +146,10 @@ async def async_setup_entry(
                 )
             )
     async_add_entities(entities)
+
+
+# Location sensors that restore their last recorded state on startup.
+RESTORING_KEYS = ("position_x", "mowing_zone", "mow_progress", "zone")
 
 
 class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
@@ -191,11 +197,13 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
         loc = self.coordinator.get_device_location()
         if not loc:
             return None
+        restored = lambda *groups: any(loc.get(f"{g}_restored") for g in groups)
         if key == "zone":
             # type-3 target and type-4 delay
             return {
                 "partition_ids": loc.get("partition_ids"),
                 "task_delay": loc.get("task_delay"),
+                "is_restored": restored("target", "delay"),
             }
         if key == "position_x":
             # the complete latest type-1 pose, as one observation
@@ -208,14 +216,48 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
                 "pose_time_ms": loc.get("pose_time"),
                 "received_at": loc.get("received_at"),
                 "source": POSE_SOURCE,
+                "is_restored": restored("pose"),
             }
         if key == "mowing_zone":
             # the latest type-2 task entry, as one observation
             task = loc.get("task")
-            return dict(task) if task else None
+            if not task:
+                return None
+            return {**task, "is_restored": restored("task")}
         if key == "mow_progress":
-            return {"progress_source": progress_percent(loc)[1]}
+            source = progress_percent(loc)[1]
+            return {
+                "progress_source": source,
+                "is_restored": (
+                    restored("progress") if source == "route"
+                    else restored("task") if source == "percentage"
+                    else False
+                ),
+            }
         return None
+
+
+class NavimowLocationSensor(NavimowSensor, RestoreEntity):
+    """Location sensor that seeds the coordinator with its last recorded state.
+
+    The location cache lives in memory, so after a restart every location
+    sensor would read unknown until its message type arrives again: up to
+    five minutes for a docked pose, and not before the next mow for the task
+    report. Restoring the last state fills that gap; the ``is_restored``
+    attribute stays true until live data of the same type replaces it.
+    (Not ``restored``: Home Assistant reserves that attribute name for
+    entity-registry placeholders and the recorder strips it from history.)
+    """
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is None:
+            return
+        for group, fields in restore_location_groups(
+            self.entity_description.key, last.state, dict(last.attributes)
+        ):
+            self.coordinator.restore_location(group, fields)
 
 
 class NavimowDockSensor(NavimowSensor, RestoreSensor):

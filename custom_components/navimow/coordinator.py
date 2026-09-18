@@ -42,6 +42,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         device: Device,
         oauth_session: config_entry_oauth2_flow.OAuth2Session | None = None,
         config_entry: ConfigEntry | None = None,
+        location_cache: dict[str, dict] | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -54,6 +55,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.api = api
         self.device = device
         self.oauth_session = oauth_session
+        # The per-device merge cache the MQTT location parser writes to;
+        # restored sensor states are seeded into it so live entries merge
+        # over them field by field.
+        self.location_cache = location_cache
         self.data: dict[str, Any] = {}
         self._last_state: DeviceStateMessage | None = None
         self._last_attributes: DeviceAttributesMessage | None = None
@@ -282,8 +287,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._maybe_learn_dock(location)
         self.async_set_updated_data(self._build_data())
 
+    def restore_location(self, group: str, fields: dict[str, Any]) -> None:
+        """Seed the shared location cache from a sensor's last recorded state.
+
+        Live data wins: nothing is written for a group whose keys are already
+        in the cache. A restored group carries ``<group>_restored: True``
+        until the parser sees the first live entry of that type.
+        """
+        cache = self.location_cache
+        if cache is None or not fields:
+            return
+        loc = dict(cache.get(self.device.id) or {"device_id": self.device.id})
+        if any(key in loc for key in fields):
+            return
+        loc.update(fields)
+        loc[f"{group}_restored"] = True
+        cache[self.device.id] = loc
+        self._last_location = loc
+        self.async_set_updated_data(self._build_data())
+
     def _maybe_learn_dock(self, location: dict) -> None:
         """Average pose samples into the dock estimate while docked/charging."""
+        if location.get("pose_restored"):
+            return  # a restored pose is not a fresh sample
         state = self._last_state
         status = (state.state or "").lower() if state else ""
         x, y = location.get("x"), location.get("y")

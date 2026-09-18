@@ -5,6 +5,7 @@ from custom_components.navimow.location import (
     TASK_ATTRIBUTES,
     parse_location_payload,
     progress_percent,
+    restore_location_groups,
 )
 
 # Shapes from the X430 capture (values invented, consistent with each other).
@@ -211,3 +212,89 @@ class PoseTest(unittest.TestCase):
         self.parse(POSE)
         loc = self.parse({**POSE, "postureY": "0.500"})
         self.assertEqual((loc["x"], loc["y"]), (1.5, 0.5))
+
+
+class RestoreTest(unittest.TestCase):
+    def test_position_x_restores_the_whole_pose(self):
+        groups = restore_location_groups("position_x", "2.068", {
+            "y": 0.308, "theta_rad": 0.356, "vehicle_state": 1,
+            "pose_time_ms": 1789692272968, "received_at": RECEIVED,
+            "source": "mqtt_location", "is_restored": False,
+        })
+        self.assertEqual(groups, [("pose", {
+            "x": 2.068, "y": 0.308, "theta": 0.356, "vehicle_state": 1,
+            "pose_time": 1789692272968, "received_at": RECEIVED,
+        })])
+
+    def test_position_without_a_usable_pose_restores_nothing(self):
+        self.assertEqual(restore_location_groups("position_x", "unknown", {}), [])
+        self.assertEqual(restore_location_groups("position_x", "1.0", {}), [])
+
+    def test_mowing_zone_restores_boundary_and_task(self):
+        attrs = {
+            "route_progress": 5000, "mowing_percentage": 50.0, "area_m2": 100.0,
+            "week_area_m2": 250.0, "action": 1, "sub_action": None,
+            "mow_start_type": 1, "map_work_position": "00", "task_time_ms": 1,
+            "is_restored": False,
+        }
+        groups = restore_location_groups("mowing_zone", "2", attrs)
+        self.assertEqual(len(groups), 1)
+        group, fields = groups[0]
+        self.assertEqual(group, "task")
+        self.assertEqual(fields["mow_boundary"], 2)
+        self.assertEqual(fields["task"], {k: attrs[k] for k in TASK_ATTRIBUTES})
+        self.assertEqual(restore_location_groups("mowing_zone", "unknown", {}), [])
+
+    def test_progress_restores_route_progress_only(self):
+        self.assertEqual(
+            restore_location_groups("mow_progress", "25.0", {"progress_source": "route"}),
+            [("progress", {"mow_progress": 2500})],
+        )
+        self.assertEqual(
+            restore_location_groups("mow_progress", "12.0", {"progress_source": "percentage"}),
+            [],  # comes back with the task group
+        )
+        self.assertEqual(
+            restore_location_groups("mow_progress", "unknown", {"progress_source": "none"}),
+            [],
+        )
+
+    def test_zone_restores_target_and_delay(self):
+        self.assertEqual(
+            restore_location_groups("zone", "unknown", {"partition_ids": None, "task_delay": False}),
+            [("target", {"partition_ids": None, "partition": None}),
+             ("delay", {"task_delay": False})],
+        )
+        self.assertEqual(
+            restore_location_groups("zone", "2", {"partition_ids": [2, 3]}),
+            [("target", {"partition_ids": [2, 3], "partition": 2})],
+        )
+        self.assertEqual(restore_location_groups("zone", "unknown", {}), [])
+
+    def test_live_entries_clear_their_own_restored_marker(self):
+        cache = {"dev-1": {
+            "device_id": "dev-1", "x": 1.0, "y": 2.0, "pose_restored": True,
+            "task": {"route_progress": 10000}, "mow_progress": 10000,
+            "task_restored": True, "progress_restored": True,
+            "partition_ids": None, "partition": None, "target_restored": True,
+            "task_delay": False, "delay_restored": True,
+        }}
+        parse = lambda *entries: parse_location_payload(cache, "dev-1", list(entries), received_at=RECEIVED)
+        loc = parse({"type": 4, "taskDelay": True})
+        self.assertNotIn("delay_restored", loc)
+        self.assertTrue(loc["pose_restored"])
+        self.assertEqual(loc["x"], 1.0)  # the restored pose survives a delay entry
+        loc = parse(POSE)
+        self.assertNotIn("pose_restored", loc)
+        self.assertEqual(loc["x"], 1.5)
+        self.assertTrue(loc["task_restored"])
+        loc = parse(FULL_TASK)
+        self.assertNotIn("task_restored", loc)
+        self.assertNotIn("progress_restored", loc)
+        loc = parse({"type": 3, "partitionIds": [2], "time": 1})
+        self.assertNotIn("target_restored", loc)
+
+    def test_status_only_delay_keeps_the_restored_marker(self):
+        cache = {"dev-1": {"device_id": "dev-1", "task_delay": True, "delay_restored": True}}
+        self.assertIsNone(parse_location_payload(cache, "dev-1", [{"time": 1, "type": 4, "vehicleState": 1}]))
+        self.assertTrue(cache["dev-1"]["delay_restored"])

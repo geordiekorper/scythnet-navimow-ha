@@ -12,6 +12,9 @@ from homeassistant.core import HomeAssistant
 from mower_sdk.models import DeviceStateMessage, DeviceStatus
 
 from custom_components.navimow.coordinator import NavimowCoordinator
+from custom_components.navimow.location import parse_location_payload
+
+from tests.test_location import POSE, RECEIVED
 
 # The full field set the REST status endpoint has been seen to return.
 REST_PAYLOAD = {
@@ -157,3 +160,41 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         text = json.dumps(details).lower()
         for word in ("token", "authorization", "bearer", "password", "pwd", "secret"):
             self.assertNotIn(word, text)
+
+    async def test_restore_seeds_the_cache_and_live_data_wins(self):
+        cache = {}
+        self.coordinator.location_cache = cache
+        pose = {"x": 2.0, "y": 0.3, "theta": 0.35, "vehicle_state": 1,
+                "pose_time": 1, "received_at": "2026-09-17T20:00:00+00:00"}
+        self.coordinator.restore_location("pose", pose)
+        loc = self.coordinator.get_device_location()
+        self.assertEqual(loc["x"], 2.0)
+        self.assertTrue(loc["pose_restored"])
+        self.assertEqual(cache["dev-1"]["x"], 2.0)
+        # a group that is already present is not overwritten
+        self.coordinator.restore_location("pose", {"x": 9.0, "y": 9.0})
+        self.assertEqual(self.coordinator.get_device_location()["x"], 2.0)
+        # a live pose merges over it and drops the marker
+        live = parse_location_payload(cache, "dev-1", [POSE], received_at=RECEIVED)
+        self.coordinator.ingest_location(live)
+        loc = self.coordinator.get_device_location()
+        self.assertEqual(loc["x"], 1.5)
+        self.assertNotIn("pose_restored", loc)
+
+    async def test_restore_without_a_cache_or_fields_is_a_no_op(self):
+        self.coordinator.restore_location("pose", {"x": 1.0, "y": 1.0})
+        self.assertIsNone(self.coordinator.get_device_location())
+        self.coordinator.location_cache = {}
+        self.coordinator.restore_location("pose", {})
+        self.assertIsNone(self.coordinator.get_device_location())
+
+    async def test_restored_pose_does_not_train_the_dock(self):
+        cache = {}
+        self.coordinator.location_cache = cache
+        self.coordinator._last_state = mqtt_message(state="docked", raw="isDocked")
+        self.coordinator.restore_location("pose", {"x": 2.0, "y": 0.3})
+        self.coordinator.ingest_location(cache["dev-1"])
+        self.assertIsNone(self.coordinator.get_dock_position())
+        live = parse_location_payload(cache, "dev-1", [POSE], received_at=RECEIVED)
+        self.coordinator.ingest_location(live)
+        self.assertEqual(self.coordinator.get_dock_position()["n"], 1)
