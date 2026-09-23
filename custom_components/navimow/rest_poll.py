@@ -1,0 +1,157 @@
+"""Steady REST status polling.
+
+The MQTT state channel is event-driven and some models only send on a state
+change, so the REST status endpoint is the second source of state and
+battery, the only source of the descriptive battery level, and the check on
+whether MQTT missed a transition. One poll per config entry covers all of its
+mowers in a single getVehicleStatus call, independent of MQTT health.
+
+The cloud answers from a cache that lags a minute or two, and its rate limit
+is not documented; 120 s is what Scythnet and NaviWatch run without tripping
+it. A failed poll backs off (doubling up to REST_POLL_MAX_BACKOFF) until one
+succeeds.
+"""
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
+
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
+from homeassistant.util import dt as dt_util
+from mower_sdk.errors import MowerAPIError
+
+from .const import REST_POLL_MAX_BACKOFF, REST_POLL_MIN_SECONDS
+
+if TYPE_CHECKING:
+    from mower_sdk.api import MowerAPI
+
+    from .coordinator import NavimowCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+STATUS_ENDPOINT = "/openapi/smarthome/getVehicleStatus"
+
+
+async def async_fetch_statuses(api: MowerAPI, device_ids: list[str]) -> list[dict[str, Any]]:
+    """The raw status entries for ``device_ids``, one getVehicleStatus call.
+
+    MowerAPI.async_get_device_statuses keeps only the fields the SDK models,
+    so this reads the reply itself: a field the cloud starts sending must
+    reach the rest_status sensor. Raises MowerAPIError like the SDK does.
+    """
+    response = await api._async_request(  # noqa: SLF001 - see docstring
+        "POST", STATUS_ENDPOINT, data={"devices": [{"id": d} for d in device_ids]}
+    )
+    if response.get("code") != 1:
+        raise MowerAPIError(f"getVehicleStatus failed: {response.get('desc')}")
+    devices = ((response.get("data") or {}).get("payload") or {}).get("devices") or []
+    return [d for d in devices if isinstance(d, dict)]
+
+
+class RestPoller:
+    """Polls REST status for one config entry's mowers on a fixed interval."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        api: MowerAPI,
+        coordinators: dict[str, NavimowCoordinator],
+        interval: int,
+        ensure_token: Callable[[], Awaitable[Any]],
+    ) -> None:
+        self.hass = hass
+        self.api = api
+        self.coordinators = coordinators
+        self.interval = max(REST_POLL_MIN_SECONDS, int(interval))
+        self._ensure_token = ensure_token
+        self._cancel: CALLBACK_TYPE | None = None
+        self._due_in: float | None = None
+        self._failures = 0
+        self._stopped = True
+        # Outcome of the latest poll, for diagnostics.
+        self.last_poll_at: str | None = None
+        self.last_error: str | None = None
+        self.last_error_at: str | None = None
+
+    @callback
+    def async_start(self) -> None:
+        """Start polling; the first poll runs one interval from now (setup
+        already fetched a status for every mower)."""
+        self._stopped = False
+        self._schedule(self.interval)
+
+    @callback
+    def async_stop(self) -> None:
+        self._stopped = True
+        self._cancel_timer()
+
+    @callback
+    def async_set_interval(self, interval: int) -> None:
+        """Change the interval; the next poll is rescheduled from now."""
+        self.interval = max(REST_POLL_MIN_SECONDS, int(interval))
+        if not self._stopped:
+            self._schedule(self.interval)
+
+    @callback
+    def async_request_poll(self, delay: float) -> None:
+        """Poll ``delay`` seconds from now, unless one is already due sooner."""
+        if self._stopped:
+            return
+        if self._due_in is None or delay < self._due_in:
+            self._schedule(delay)
+
+    @property
+    def next_delay(self) -> float | None:
+        """Delay the pending poll was scheduled with, or None."""
+        return self._due_in
+
+    @callback
+    def _cancel_timer(self) -> None:
+        if self._cancel is not None:
+            self._cancel()
+            self._cancel = None
+        self._due_in = None
+
+    @callback
+    def _schedule(self, delay: float) -> None:
+        self._cancel_timer()
+        self._due_in = delay
+        self._cancel = async_call_later(self.hass, delay, self._fire)
+
+    @callback
+    def _fire(self, _now: Any) -> None:
+        self._cancel = None
+        self._due_in = None
+        self.hass.async_create_task(self.async_poll())
+
+    async def async_poll(self) -> None:
+        """Poll once, apply the replies, and schedule the next poll."""
+        device_ids = list(self.coordinators)
+        try:
+            await self._ensure_token()
+            statuses = await async_fetch_statuses(self.api, device_ids)
+        except Exception as err:  # noqa: BLE001 - any failure backs off
+            self._failures += 1
+            self.last_error = str(err) or type(err).__name__
+            self.last_error_at = dt_util.utcnow().isoformat()
+            delay = min(self.interval * 2 ** self._failures, max(self.interval, REST_POLL_MAX_BACKOFF))
+            _LOGGER.warning(
+                "REST status poll failed (%d in a row), next in %d s: %s",
+                self._failures, delay, self.last_error,
+            )
+            if not self._stopped:
+                self._schedule(delay)
+            return
+        self._failures = 0
+        self.last_error = None
+        self.last_poll_at = dt_util.utcnow().isoformat()
+        for raw in statuses:
+            coordinator = self.coordinators.get(str(raw.get("id") or raw.get("device_id") or ""))
+            if coordinator is None:
+                _LOGGER.debug("REST status for an unknown device: %s", raw.get("id"))
+                continue
+            coordinator.apply_rest_status(raw, self.last_poll_at)
+        if not self._stopped:
+            self._schedule(self.interval)

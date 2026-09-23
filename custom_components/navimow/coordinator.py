@@ -86,7 +86,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # not become the current state.
         self._mqtt_state_time_ms: int | None = None
         self._rest_status: DeviceStatus | None = None
+        self._rest_raw: dict[str, Any] | None = None  # the reply as sent
         self._rest_polled_at: str | None = None
+        # The entry's steady REST poll, set by async_setup_entry.
+        self.rest_poller: Any = None
         # Input received but not applied (rejected.py): a running count since
         # start-up and the latest item.
         self._rejected_count = 0
@@ -220,6 +223,24 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.data = self._build_data()
         return self.data
+
+    def apply_rest_status(self, raw: dict[str, Any], polled_at: str) -> None:
+        """Adopt one reply of the steady REST poll (rest_poll.py).
+
+        The reply is always kept as the latest REST observation. It becomes
+        the displayed state only while MQTT is stale, the same rule as the
+        fallback fetch in _async_update_data, which it also satisfies.
+        """
+        status = DeviceStatus.from_dict(dict(raw))
+        self._rest_status = status
+        self._rest_raw = dict(raw)
+        self._rest_polled_at = polled_at
+        now = time.monotonic()
+        self._last_http_fetch = now
+        if self._last_mqtt_update is None or now - self._last_mqtt_update > MQTT_STALE_SECONDS:
+            self._last_state = self._device_status_to_state(status)
+            self._last_data_source = "http_fallback"
+        self.async_set_updated_data(self._build_data())
 
     def _handle_state(self, state: DeviceStateMessage) -> None:
         if state.device_id != self.device.id:

@@ -271,3 +271,23 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         await self.coordinator._async_update_data()
         self.assertIs(self.coordinator.get_device_state(), newer)
         self.assertEqual(self.coordinator.get_data_source(), "mqtt_push")
+
+    async def test_rest_poll_reply_is_kept_and_shown_only_when_mqtt_is_stale(self):
+        self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:00:00+00:00")
+        self.assertEqual(self.coordinator.get_data_source(), "http_fallback")
+        self.assertEqual(self.coordinator.get_device_state().state, "docked")
+        msg = mqtt_message()
+        self.coordinator._handle_state(msg)
+        await asyncio.sleep(0)
+        self.coordinator.apply_rest_status(
+            {**REST_PAYLOAD, "vehicleState": "isIdel"}, "2026-09-17T20:02:00+00:00"
+        )
+        self.assertIs(self.coordinator.get_device_state(), msg)  # MQTT is fresh
+        details = self.coordinator.get_source_details()
+        self.assertEqual(details["rest_vehicle_state"], "isIdel")
+        self.assertEqual(details["rest_polled_at"], "2026-09-17T20:02:00+00:00")
+
+    async def test_rest_poll_satisfies_the_hourly_fallback(self):
+        self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:00:00+00:00")
+        await self.coordinator._async_update_data()
+        self.api.async_get_device_status.assert_not_awaited()

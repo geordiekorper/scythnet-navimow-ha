@@ -41,6 +41,12 @@ MQTT_KEEPALIVE: Final = 60
 # 更新间隔（秒）
 UPDATE_INTERVAL: Final = 30
 
+# Steady REST status poll (rest_poll.py): interval, the floor an option may
+# set, and the longest wait after repeated failures (seconds).
+REST_POLL_SECONDS: Final = 120
+REST_POLL_MIN_SECONDS: Final = 30
+REST_POLL_MAX_BACKOFF: Final = 600
+
 # MQTT 超时时间（秒），超过该时间未收到消息则走 HTTP 兜底
 MQTT_STALE_SECONDS: Final = 300
 

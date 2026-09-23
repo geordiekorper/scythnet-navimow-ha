@@ -27,11 +27,13 @@ from .const import (
     MQTT_USERNAME,
     MQTT_PASSWORD,
     MQTT_KEEPALIVE,
+    REST_POLL_SECONDS,
 )
 from .coordinator import NavimowCoordinator
 from .services import async_setup_services, async_unload_services
 from .location import location_topic, parse_location_message
 from .rejected import raw_message_rejection
+from .rest_poll import RestPoller
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.debug("Navimow module imported (__init__.py)")
@@ -402,8 +404,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinators[device.id] = coordinator
             _location_coordinators[device.id] = coordinator
 
+        # Steady REST status poll for all of this entry's mowers, independent
+        # of MQTT health (the coordinators' own fetch is only a fallback).
+        rest_poller: RestPoller | None = None
+        if coordinators:
+            first = next(iter(coordinators.values()))
+            rest_poller = RestPoller(
+                hass, api, coordinators, REST_POLL_SECONDS, first._async_ensure_valid_token
+            )
+            for coordinator in coordinators.values():
+                coordinator.rest_poller = rest_poller
+            rest_poller.async_start()
+            entry.async_on_unload(rest_poller.async_stop)
+
         # 存储数据
         hass.data[DOMAIN][entry.entry_id] = {
+            "rest_poller": rest_poller,
             "sdk": sdk,
             "api": api,
             "devices": devices,
