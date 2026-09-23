@@ -27,9 +27,15 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
+def vehicle_topic(device_id: str, channel: str) -> str:
+    """Cloud MQTT topic of one of a device's channels (state, event,
+    attributes, location)."""
+    return f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
+
+
 def location_topic(device_id: str) -> str:
     """Cloud MQTT topic that carries real-time pose/zone for a device."""
-    return f"/downlink/vehicle/{device_id}/realtimeDate/location"
+    return vehicle_topic(device_id, "location")
 
 
 # Mower status values during which the pose is the dock position. "idle" is
@@ -248,6 +254,15 @@ TIME_AHEAD_MAX_MS = 5 * 60 * 1000
 def plausible_time(event_ms: int, now_ms: int) -> bool:
     """Whether an event time can be believed (both ends included)."""
     return PLAUSIBLE_MIN_MS <= event_ms <= now_ms + TIME_AHEAD_MAX_MS
+
+
+def mower_time_ms(value: Any) -> int | None:
+    """A mower timestamp as epoch milliseconds, whether sent in seconds or
+    milliseconds; None when absent or not a positive number."""
+    number = _int(value)
+    if number is None or number <= 0:
+        return None
+    return number if number > 100_000_000_000 else number * 1000
 
 
 def is_placeholder_pose(pose: dict[str, Any]) -> bool:

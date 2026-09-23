@@ -26,7 +26,13 @@ from .const import (
     MQTT_STALE_SECONDS,
     UPDATE_INTERVAL,
 )
-from .location import DOCKED_STATES, update_dock_estimate
+from .location import (
+    DOCKED_STATES,
+    mower_time_ms,
+    plausible_time,
+    update_dock_estimate,
+    vehicle_topic,
+)
 from .rejected import rejection_record
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,6 +81,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # result including the fields the SDK keeps in DeviceStatus.extra.
         self._mqtt_state: DeviceStateMessage | None = None
         self._mqtt_received_at: str | None = None
+        # Mower time (ms) of the newest MQTT state message applied: the
+        # broker delivers late and out of order, and an older message must
+        # not become the current state.
+        self._mqtt_state_time_ms: int | None = None
         self._rest_status: DeviceStatus | None = None
         self._rest_polled_at: str | None = None
         # Input received but not applied (rejected.py): a running count since
@@ -162,10 +172,15 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise
 
         cached_state = self.sdk.get_cached_state(self.device.id)
-        if cached_state is not None and cached_state is not self._mqtt_state:
+        if (
+            cached_state is not None
+            and cached_state is not self._mqtt_state
+            and self._state_rejection(cached_state) is None
+        ):
             # A message the callback did not deliver (it arrived before the
             # callback was registered). Adopt it once; later polls that find
-            # the same object leave the state and its source label alone.
+            # the same object leave the state and its source label alone. A
+            # late one was already recorded when the callback saw it.
             self._adopt_mqtt_state(cached_state, "mqtt_cache")
 
         cached_attrs = self.sdk.get_cached_attributes(self.device.id)
@@ -235,8 +250,26 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _update_from_state(
         self, state: DeviceStateMessage, received_at: str | None = None
     ) -> None:
+        reason = self._state_rejection(state)
+        if reason is not None:
+            self.record_rejected(
+                "state", vehicle_topic(self.device.id, "state"), reason, state.to_dict()
+            )
+            return
         self._adopt_mqtt_state(state, "mqtt_push", received_at)
         self.async_set_updated_data(self._build_data())
+
+    def _state_rejection(self, state: DeviceStateMessage) -> str | None:
+        """Why an MQTT state message must not become the current state, or
+        None. A message without a timestamp is applied as it arrives."""
+        stamp = mower_time_ms(state.timestamp)
+        if stamp is None:
+            return None
+        if not plausible_time(stamp, round(time.time() * 1000)):
+            return "implausible_time"
+        if self._mqtt_state_time_ms is not None and stamp < self._mqtt_state_time_ms:
+            return "stale"
+        return None
 
     def _adopt_mqtt_state(
         self, state: DeviceStateMessage, source: str, received_at: str | None = None
@@ -248,6 +281,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         self._mqtt_state = state
         self._mqtt_received_at = received_at or dt_util.utcnow().isoformat()
+        stamp = mower_time_ms(state.timestamp)
+        if stamp is not None:
+            self._mqtt_state_time_ms = stamp
         self._last_state = state
         self._last_data_source = source
 
