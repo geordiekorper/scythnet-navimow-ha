@@ -27,6 +27,7 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .location import DOCKED_STATES, update_dock_estimate
+from .rejected import rejection_record
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +77,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt_received_at: str | None = None
         self._rest_status: DeviceStatus | None = None
         self._rest_polled_at: str | None = None
+        # Input received but not applied (rejected.py): a running count since
+        # start-up and the latest item.
+        self._rejected_count = 0
+        self._last_rejected: dict[str, Any] | None = None
 
     async def async_setup(self) -> None:
         """Register callbacks from SDK."""
@@ -286,6 +291,29 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_location = location
         self._maybe_learn_dock(location)
         self.async_set_updated_data(self._build_data())
+
+    def record_rejected(
+        self,
+        channel: str,
+        topic: str | None,
+        reason: str,
+        payload: Any,
+        reasons: list[str] | None = None,
+    ) -> None:
+        """Record input that was received but not applied (see rejected.py).
+
+        Must run on the event loop. Each call is one state update of the
+        rejected_input sensor, so the recorder keeps every item.
+        """
+        self._last_rejected = rejection_record(
+            channel, topic, reason, payload, dt_util.utcnow().isoformat(), reasons
+        )
+        self._rejected_count += 1
+        self.async_set_updated_data(self._build_data())
+
+    def get_rejected(self) -> tuple[int, dict[str, Any] | None]:
+        """Count of rejected items since start-up, and the latest one."""
+        return self._rejected_count, self._last_rejected
 
     def restore_location(self, group: str, fields: dict[str, Any]) -> None:
         """Seed the shared location cache from a sensor's last recorded state.

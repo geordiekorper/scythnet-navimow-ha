@@ -116,6 +116,13 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         value_fn=lambda c: progress_percent(c.get_device_location())[0],
     ),
     NavimowSensorEntityDescription(
+        key="rejected_input",
+        name="Rejected input",
+        icon="mdi:message-alert-outline",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda c: c.get_rejected()[0],
+    ),
+    NavimowSensorEntityDescription(
         key="data_source",
         name="Data source",
         icon="mdi:database-sync",
@@ -200,6 +207,8 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
         key = self.entity_description.key
         if key == "data_source":
             return self.coordinator.get_source_details()
+        if key == "rejected_input":
+            return self.coordinator.get_rejected()[1]
         loc = self.coordinator.get_device_location()
         if not loc:
             return None

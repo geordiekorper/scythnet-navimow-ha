@@ -211,3 +211,19 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         for snap in parse_location_message({}, "dev-1", poses, received_at=RECEIVED):
             self.coordinator.ingest_location(snap)
         self.assertEqual(published, [1.0, 2.0, 3.0, 4.0])
+
+    async def test_rejected_input_counts_and_publishes_each_item(self):
+        published = []
+        self.coordinator.async_add_listener(
+            lambda: published.append(self.coordinator.get_rejected())
+        )
+        self.assertEqual(self.coordinator.get_rejected(), (0, None))
+        self.coordinator.record_rejected("location", "/t", "stale", "[1]")
+        self.coordinator.record_rejected("state", "/s", "unknown_field", {"x": 1})
+        self.assertEqual([count for count, _ in published], [1, 2])
+        count, latest = self.coordinator.get_rejected()
+        self.assertEqual(count, 2)
+        self.assertEqual(latest["channel"], "state")
+        self.assertEqual(latest["reason"], "unknown_field")
+        self.assertIsNotNone(latest["received_at"])
+        self.assertEqual(published[0][1]["channel"], "location")

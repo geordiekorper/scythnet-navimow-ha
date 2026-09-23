@@ -43,6 +43,11 @@ class FakeCoordinator:
     def get_source_details(self):
         return {"mqtt_state": "mowing", "rest_status": None}
 
+    def get_rejected(self):
+        return self.rejected
+
+    rejected = (0, None)
+
 
 class SensorAttributesTest(unittest.TestCase):
     def setUp(self):
@@ -88,6 +93,16 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertEqual(attrs["delay_received_at"], RECEIVED)
         self.assertNotIn("mow_boundary", attrs)
         self.assertNotIn("mow_progress", attrs)
+
+    def test_rejected_input_shows_the_count_and_the_latest_item(self):
+        sensor = self.sensor("rejected_input")
+        self.assertEqual(sensor.native_value, 0)
+        self.assertIsNone(sensor.extra_state_attributes)
+        item = {"channel": "location", "reason": "stale", "payload": "[]"}
+        self.coordinator.rejected = (3, item)
+        self.assertEqual(sensor.native_value, 3)
+        self.assertEqual(sensor.extra_state_attributes, item)
+        self.assertEqual(DESCRIPTIONS["rejected_input"].entity_category, "diagnostic")
 
     def test_other_sensors_have_no_attributes(self):
         self.feed(FULL_TASK, POSE)
