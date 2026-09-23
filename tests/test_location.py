@@ -513,7 +513,7 @@ class PlausibilityAndPlaceholderTest(unittest.TestCase):
             {**POSE, "postureX": "0", "postureY": "0", "postureTheta": "0"},
             {"type": 3, "partitionIds": [9], "time": 1},
         )
-        self.assertEqual(result.reasons, ["placeholder", "implausible_time"])
+        self.assertEqual(set(result.reasons), {"placeholder", "implausible_time"})
         self.assertEqual(result.reason, "implausible_time")
 
 
@@ -575,13 +575,35 @@ class HighWaterTest(unittest.TestCase):
         self.parse(POSE)
         self.assertEqual(self.parse(POSE).reason, "stale")
 
-    def test_reordering_inside_one_message(self):
+    def test_entries_of_one_message_apply_in_time_order(self):
         result = self.parse(
             {**POSE, "time": 1700000004000, "postureX": "4.000"},
             {**POSE, "time": 1700000002000, "postureX": "2.000"},
             {**POSE, "time": 1700000006000, "postureX": "6.000"},
         )
-        self.assertEqual([s["x"] for s in result.snapshots], [4.0, 6.0])
+        self.assertEqual([s["x"] for s in result.snapshots], [2.0, 4.0, 6.0])
+        self.assertEqual(result.reasons, [])
+
+    def test_reconnect_batch_newest_first_is_recorded_whole(self):
+        # As delivered after a restart on 2026-09-23 (times shortened).
+        result = self.parse(
+            {**POSE, "postureX": "10.445", "time": 1790195794896},
+            {"time": 1790195793120, "type": 4, "vehicleState": 4},
+            {**POSE, "postureX": "10.702", "time": 1790195792894},
+            {**POSE, "postureX": "11.021", "time": 1790195788896},
+        )
+        self.assertEqual([s["pose_time"] for s in result.snapshots],
+                         [1790195788896, 1790195792894, 1790195794896])
+        self.assertEqual(self.cache["dev-1"]["x"], 10.445)
+        self.assertEqual(result.reasons, [])
+
+    def test_only_entries_older_than_the_last_message_are_stale(self):
+        self.parse({**POSE, "time": 1700000005000})
+        result = self.parse(
+            {**POSE, "time": 1700000006000, "postureX": "6.000"},
+            {**POSE, "time": 1700000004000, "postureX": "4.000"},
+        )
+        self.assertEqual([s["x"] for s in result.snapshots], [6.0])
         self.assertEqual(result.reasons, ["stale"])
 
     def test_each_type_has_its_own_mark(self):

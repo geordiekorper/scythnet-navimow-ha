@@ -351,6 +351,26 @@ def strip_sdk_envelope(data: Any, device_id: str) -> Any:
     return data
 
 
+def _in_time_order(entries: list[Any]) -> list[Any]:
+    """The entries with the timed ones in ascending time order.
+
+    The broker's catch-up message after a reconnect lists poses newest
+    first; applied in that order, the per-type guard would take the newest
+    and reject the rest as late. The timed entries are sorted among
+    themselves (stable, so equal times keep their order) and put back in
+    the slots timed entries occupied; untimed entries keep their place.
+    """
+    slots = [
+        i for i, item in enumerate(entries)
+        if isinstance(item, dict) and (_int(item.get("time")) or 0) > 0
+    ]
+    ordered = sorted((entries[i] for i in slots), key=lambda item: _int(item.get("time")))
+    result = list(entries)
+    for i, item in zip(slots, ordered):
+        result[i] = item
+    return result
+
+
 def parse_location_message(
     cache: dict[str, dict],
     device_id: str,
@@ -378,7 +398,7 @@ def parse_location_message(
     now_ms = round(time.time() * 1000) if now_ms is None else now_ms
     loc = dict(cache.get(device_id) or {})
     loc["device_id"] = device_id
-    for item in data:
+    for item in _in_time_order(data):
         if not isinstance(item, dict):
             continue
         changed = False
