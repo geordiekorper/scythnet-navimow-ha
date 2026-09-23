@@ -37,6 +37,26 @@ class CommandsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Submitted resume command for device mower-1', logs.output[0])
         self.coordinator.async_request_refresh.assert_awaited_once()
 
+    async def test_submission_requests_a_rest_poll_soon(self):
+        self.coordinator.rest_poller = SimpleNamespace(async_request_poll=Mock())
+        await self.send()
+        self.coordinator.rest_poller.async_request_poll.assert_called_once_with(5)
+
+    async def test_failed_submission_still_requests_a_poll(self):
+        # A command whose reply was lost may still have acted.
+        self.coordinator.rest_poller = SimpleNamespace(async_request_poll=Mock())
+        self.api.async_send_command.side_effect = RuntimeError("timed out")
+        with self.assertRaises(HomeAssistantError), self.assertLogs(LOGGER, level="ERROR"):
+            await self.send()
+        self.coordinator.rest_poller.async_request_poll.assert_called_once_with(5)
+
+    async def test_command_not_sent_requests_no_poll(self):
+        self.coordinator.rest_poller = SimpleNamespace(async_request_poll=Mock())
+        self.coordinator._async_ensure_valid_token.side_effect = HomeAssistantError("auth")
+        with self.assertRaises(HomeAssistantError), self.assertLogs(LOGGER, level="ERROR"):
+            await self.send()
+        self.coordinator.rest_poller.async_request_poll.assert_not_called()
+
     async def test_auth_error_is_logged_and_preserved(self):
         error = HomeAssistantError('Authentication required')
         self.coordinator._async_ensure_valid_token.side_effect = error

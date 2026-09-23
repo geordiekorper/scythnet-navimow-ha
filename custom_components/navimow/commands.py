@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, NoReturn
 
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 
+from .const import COMMAND_POLL_DELAY
+
 if TYPE_CHECKING:
     from mower_sdk.api import MowerAPI
     from mower_sdk.models import MowerCommand
@@ -38,7 +40,15 @@ async def async_send_command(
     """Submit a typed SDK command; follow-up refresh is best effort."""
     try:
         await coordinator._async_ensure_valid_token()
-        await api.async_send_command(device_id, command)
+        try:
+            await api.async_send_command(device_id, command)
+        finally:
+            # Whatever the reply, check the effect soon: a command whose reply
+            # was lost may still have acted, the cloud's status cache lags,
+            # and the mower may not report the transition over MQTT at once.
+            poller = getattr(coordinator, "rest_poller", None)
+            if poller is not None:
+                poller.async_request_poll(COMMAND_POLL_DELAY)
     except ConfigEntryAuthFailed:
         _LOGGER.error("Authentication required for %s command on device %s", command.value, device_id)
         if coordinator.config_entry is not None:
