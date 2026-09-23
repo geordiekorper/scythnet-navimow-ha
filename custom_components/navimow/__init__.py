@@ -555,9 +555,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Apply a changed poll interval to the running poller, without a reload."""
-    poller = (hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}).get("rest_poller")
+    data = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
+    poller = data.get("rest_poller")
     if poller is not None:
         poller.async_set_interval(entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS))
+        if data.get("health") is not None:
+            data["health"].note_settings_changed()  # collector_status shows it
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

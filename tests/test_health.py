@@ -164,6 +164,14 @@ class LastMessageSensorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sensor.unique_id, "navimow_dev-1_last_message")
         self.assertEqual(self.sensor.device_class, "timestamp")
 
+    async def test_message_before_the_entity_existed_is_shown(self):
+        health = CollectorHealth()
+        health.note_message("dev-1")
+        sensor = NavimowLastMessageSensor(health, DEVICE)
+        sensor.async_on_remove = Mock()
+        await sensor.async_added_to_hass()
+        self.assertEqual(sensor.native_value, health.last_message_at["dev-1"])
+
     async def test_other_mowers_messages_are_ignored(self):
         self.health.note_message("dev-2")
         self.assertEqual(self.writes(), 0)
@@ -238,6 +246,10 @@ class CollectorStatusTest(unittest.TestCase):
         self.health.note_token(None)
         self.assertEqual(len(self.heard), 1)
         self.assertTrue(self.health.token_expires_at.startswith("2023-11-14T22:13:20"))
+
+    def test_settings_change_is_announced(self):
+        self.health.note_settings_changed()
+        self.assertEqual(self.heard, ["starting"])
 
     def test_poll_outcome_notifies_only_when_the_error_changes(self):
         poller = SimpleNamespace(last_error=None, last_error_at=None, interval=120)

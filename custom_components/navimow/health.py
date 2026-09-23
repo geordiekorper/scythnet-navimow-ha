@@ -142,6 +142,11 @@ class CollectorHealth:
             self._notify()
 
     @callback
+    def note_settings_changed(self) -> None:
+        """A setting shown in the status (the poll interval) changed."""
+        self._notify()
+
+    @callback
     def note_poll(self) -> None:
         """A REST poll finished; tell the listeners only if its error changed,
         so a healthy poll does not rewrite the status every two minutes."""

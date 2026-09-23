@@ -355,6 +355,8 @@ class NavimowLastMessageSensor(SensorEntity):
         self._cancel_flush: Callable[[], None] | None = None
 
     async def async_added_to_hass(self) -> None:
+        # Messages can arrive before the entity exists; start from the last.
+        self._shown = self._health.last_message_at.get(self._device_id)
         self.async_on_remove(self._health.async_add_message_listener(self._on_message))
         self.async_on_remove(self._cancel_pending_flush)
 

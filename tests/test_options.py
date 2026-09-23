@@ -50,10 +50,12 @@ class OptionsTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_changed_option_reaches_the_running_poller(self):
         poller = SimpleNamespace(async_set_interval=Mock())
-        self.hass.data[DOMAIN] = {"entry-1": {"rest_poller": poller}}
+        health = SimpleNamespace(note_settings_changed=Mock())
+        self.hass.data[DOMAIN] = {"entry-1": {"rest_poller": poller, "health": health}}
         entry = SimpleNamespace(entry_id="entry-1", options={"rest_poll_seconds": 90})
         await _async_options_updated(self.hass, entry)
         poller.async_set_interval.assert_called_once_with(90)
+        health.note_settings_changed.assert_called_once()
 
     async def test_listener_without_a_poller_is_a_no_op(self):
         entry = SimpleNamespace(entry_id="gone", options={})
