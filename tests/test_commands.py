@@ -1,4 +1,5 @@
 """Shared command behavior; all mower communication is mocked."""
+import asyncio
 import logging
 import tempfile
 import unittest
@@ -8,10 +9,13 @@ from unittest.mock import AsyncMock, Mock, patch
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+import aiohttp
+from mower_sdk.errors import MowerAPIError
 from mower_sdk.models import MowerCommand
 
 from custom_components.navimow.commands import (
     async_send_command,
+    classify_reply,
     reject_unsupported_command,
 )
 from custom_components.navimow.lawn_mower import NavimowLawnMower
@@ -157,3 +161,59 @@ class CommandsTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 await coordinator.async_shutdown()
                 await hass.async_stop(force=True)
+
+
+def reply(*results):
+    return {"payload": {"commands": list(results)}}
+
+
+class OutcomeTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.api = SimpleNamespace(async_send_command=AsyncMock(
+            return_value=reply({"ids": ["mower-1"], "status": "SUCCESS"})
+        ))
+        self.coordinator = SimpleNamespace(
+            _async_ensure_valid_token=AsyncMock(), async_request_refresh=AsyncMock(),
+            config_entry=None,
+        )
+
+    async def send(self):
+        return await async_send_command(self.api, self.coordinator, "mower-1", MowerCommand.DOCK)
+
+    async def test_accepted_command_reports_its_outcome(self):
+        with self.assertLogs(LOGGER, level="INFO"):
+            outcome = await self.send()
+        self.assertEqual(outcome["command"], "dock")
+        self.assertEqual(outcome["status"], "accepted")
+        self.assertIsNone(outcome["error"])
+        self.assertLessEqual(outcome["sent_at"], outcome["recorded_at"])
+
+    def test_reply_classification(self):
+        self.assertEqual(classify_reply(reply({"status": "SUCCESS"})), "accepted")
+        self.assertEqual(
+            classify_reply(reply({"status": "ERROR", "errorCode": "alreadyInState"})),
+            "already_in_state",
+        )
+        self.assertEqual(
+            classify_reply(reply({"status": "SUCCESS"},
+                                 {"status": "ERROR", "errorCode": "alreadyInState"})),
+            "already_in_state",
+        )
+        for data in (reply(), {}, None, reply({"status": "PENDING"}), {"payload": "x"}):
+            self.assertEqual(classify_reply(data), "unknown", data)
+
+    async def test_no_reply_is_unconfirmed_not_failed(self):
+        for cause in (aiohttp.ClientConnectionError("reset"), asyncio.TimeoutError()):
+            error = MowerAPIError("API request failed")
+            error.__cause__ = cause
+            self.api.async_send_command.side_effect = error
+            with self.assertLogs(LOGGER, level="WARNING") as logs:
+                outcome = await self.send()
+            self.assertEqual(outcome["status"], "unconfirmed")
+            self.assertIn("may still act", logs.output[0])
+            self.assertIsNotNone(outcome["recorded_at"])
+
+    async def test_refusal_still_raises(self):
+        self.api.async_send_command.side_effect = MowerAPIError("COMMAND_FAILED: deviceOffline")
+        with self.assertLogs(LOGGER, level="ERROR"), self.assertRaises(HomeAssistantError):
+            await self.send()

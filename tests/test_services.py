@@ -78,6 +78,18 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
             'navimow', name, {}, target={'entity_id': entity_id}, blocking=True
         )
 
+    async def test_command_outcome_is_returned_when_asked_for(self):
+        self.first._api.async_send_command.return_value = {
+            "payload": {"commands": [{"status": "ERROR", "errorCode": "alreadyInState"}]}
+        }
+        response = await self.hass.services.async_call(
+            'navimow', 'stop', {}, target={'entity_id': self.first.entity_id},
+            blocking=True, return_response=True,
+        )
+        outcome = response[self.first.entity_id]
+        self.assertEqual(outcome["command"], "stop")
+        self.assertEqual(outcome["status"], "already_in_state")
+
     async def test_each_entity_routes_to_its_own_mower(self):
         await self.call('resume', self.first.entity_id)
         await self.call('stop', self.second.entity_id)

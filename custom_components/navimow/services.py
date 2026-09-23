@@ -1,7 +1,7 @@
 """Services for Navimow integration."""
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import service
 
@@ -26,8 +26,11 @@ SERVICE_SCHEMA_SET_BLADE_HEIGHT = vol.Schema(
 def async_setup_services(hass: HomeAssistant) -> None:
     for name, method in COMMAND_SERVICES.items():
         if not hass.services.has_service(DOMAIN, name):
+            # The vendor's verdict comes back as response data when asked
+            # for (return_response), keyed by entity id.
             service.async_register_platform_entity_service(
-                hass, DOMAIN, name, entity_domain="lawn_mower", schema=None, func=method
+                hass, DOMAIN, name, entity_domain="lawn_mower", schema=None, func=method,
+                supports_response=SupportsResponse.OPTIONAL,
             )
 
     async def _handle_set_blade_height(call: ServiceCall) -> None:

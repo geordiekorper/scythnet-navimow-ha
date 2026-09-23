@@ -116,7 +116,14 @@ coordinator update errors through its normal logging.
 INFO messages require INFO logging to be enabled for `custom_components.navimow.commands`.
 
 Successful submission does not confirm that the mower completed the action; check
-its reported state. A subsequent refresh failure is logged without failing the submitted action.
+its reported state. `navimow.resume` and `navimow.stop` return the cloud's verdict
+as response data when asked for (`response_variable` in a script, or "Return
+response" in Developer Tools), keyed by entity id: `command`, `status`
+(`accepted`, `already_in_state`, `unknown` when the reply says neither, or
+`unconfirmed` when no reply came back at all, in which case the command may still
+act and no error is raised), `error`, `sent_at` and `recorded_at`. A command the
+cloud refuses raises an error as before. Every command sent is followed by a REST
+status poll 5 s later. A subsequent refresh failure is logged without failing the submitted action.
 Authentication failures before submission start the integration's reauthentication flow.
 Blade-height adjustment is unsupported. Requests log a warning with the device
 and requested height, then report an action error without sending a command.

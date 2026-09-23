@@ -127,22 +127,22 @@ class NavimowLawnMower(CoordinatorEntity[NavimowCoordinator], LawnMowerEntity):
             attributes["attributes"] = attrs.attributes
         return attributes
 
-    async def async_start_mowing(self) -> None:
+    async def async_start_mowing(self) -> dict[str, Any]:
         """Start mowing."""
-        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.START)
+        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.START)
 
-    async def async_pause(self) -> None:
+    async def async_pause(self) -> dict[str, Any]:
         """Pause mowing."""
-        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.PAUSE)
+        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.PAUSE)
 
-    async def async_dock(self) -> None:
+    async def async_dock(self) -> dict[str, Any]:
         """Dock the mower."""
-        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.DOCK)
+        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.DOCK)
 
-    async def async_resume(self) -> None:
+    async def async_resume(self) -> dict[str, Any]:
         """Resume mowing."""
-        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.RESUME)
+        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.RESUME)
 
-    async def async_stop(self) -> None:
+    async def async_stop(self) -> dict[str, Any]:
         """Pause the task using Navimow's stop command."""
-        await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.STOP)
+        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.STOP)
