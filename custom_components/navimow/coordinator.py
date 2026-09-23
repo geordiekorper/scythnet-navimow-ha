@@ -81,6 +81,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # result including the fields the SDK keeps in DeviceStatus.extra.
         self._mqtt_state: DeviceStateMessage | None = None
         self._mqtt_received_at: str | None = None
+        self._mqtt_received_monotonic: float | None = None
         # Mower time (ms) of the newest MQTT state message applied: the
         # broker delivers late and out of order, and an older message must
         # not become the current state.
@@ -246,6 +247,20 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_data_source = "http_fallback"
         self.async_set_updated_data(self._build_data())
 
+    def get_watch_view(self, now: float) -> dict[str, Any]:
+        """What the MQTT watchdog (watchdog.py) compares, at monotonic ``now``:
+        the last MQTT state report and its age, and REST's latest state."""
+        mqtt, rest = self._mqtt_state, self._rest_status
+        received = self._mqtt_received_monotonic
+        return {
+            "name": self.device.name,
+            "mqtt_state": mqtt.state if mqtt else None,
+            "mqtt_key": self._mqtt_received_at,  # identifies the report
+            "mqtt_age": None if received is None else now - received,
+            "rest_state": rest.status.value if rest else None,
+            "rest_raw_state": (self._rest_raw or {}).get("vehicleState"),
+        }
+
     def get_rest_details(self) -> tuple[str | None, dict[str, Any] | None]:
         """The latest REST reply as sent: its raw vehicleState, and the rest.
 
@@ -328,6 +343,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         self._mqtt_state = state
         self._mqtt_received_at = received_at or dt_util.utcnow().isoformat()
+        self._mqtt_received_monotonic = time.monotonic()
         stamp = mower_time_ms(state.timestamp)
         if stamp is not None:
             self._mqtt_state_time_ms = stamp

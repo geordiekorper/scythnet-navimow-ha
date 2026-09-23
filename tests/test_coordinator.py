@@ -318,3 +318,16 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.coordinator.health = SimpleNamespace(note_token=Mock())
         await self.coordinator._async_ensure_valid_token()
         self.coordinator.health.note_token.assert_called_once_with(1700000000)
+
+    async def test_watch_view_pairs_the_last_mqtt_report_with_rest(self):
+        view = self.coordinator.get_watch_view(time.monotonic())
+        self.assertEqual((view["mqtt_state"], view["rest_state"], view["mqtt_age"]), (None, None, None))
+        self.coordinator._update_from_state(mqtt_message(), "2026-09-17T20:00:00+00:00")
+        self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:02:00+00:00")
+        view = self.coordinator.get_watch_view(time.monotonic() + 150)
+        self.assertEqual(view["mqtt_state"], "mowing")
+        self.assertEqual(view["mqtt_key"], "2026-09-17T20:00:00+00:00")
+        self.assertGreaterEqual(view["mqtt_age"], 150)
+        self.assertEqual(view["rest_state"], "docked")
+        self.assertEqual(view["rest_raw_state"], "isDocked")
+        self.assertEqual(view["name"], "Mower")

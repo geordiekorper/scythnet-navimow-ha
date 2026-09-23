@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -36,6 +36,7 @@ from .location import location_topic, parse_location_message
 from .rejected import raw_message_rejection
 from .health import CollectorHealth, instrument_mqtt
 from .rest_poll import RestPoller
+from .watchdog import MqttWatchdog
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.debug("Navimow module imported (__init__.py)")
@@ -313,16 +314,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await asyncio.sleep(25)
             _LOGGER.info("MQTT status probe (30s): connected=%s", sdk.is_connected)
 
-        async def _async_refresh_mqtt_credentials(sdk: NavimowSDK, api: MowerAPI) -> None:
-            """Token 过期或 MQTT 断连后，重新获取 MQTT 凭据并更新 SDK。
+        async def _async_fetch_mqtt_credentials(
+            api: MowerAPI,
+        ) -> tuple[dict[str, str] | None, str | None, str | None] | None:
+            """Refresh the OAuth token, then fetch broker credentials for it.
 
             服务端下发的 userName/pwdInfo 与 OAuth token 绑定，token 刷新后需同步更新，
             否则 MQTT 重连时会收到 CODE_OAUTH_INFO_ILLEGAL。
 
             必须先刷新 OAuth token：MQTT 断连往往正是因为 token 过期触发的，
             此时 api._token 极可能也已失效，需先换新 token 再拉取 MQTT 凭据。
+
+            Returns (auth_headers, username, password), any of them None when
+            not renewed, or None when the broker credentials could not be had.
             """
-            new_access_token: str | None = None
             new_auth_headers: dict[str, str] | None = None
             try:
                 # 先刷新 OAuth token（oauth_session 来自外层闭包）
@@ -345,21 +350,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 new_mqtt_info = await api.async_get_mqtt_user_info()
             except Exception as err:
                 _LOGGER.warning("Failed to refresh MQTT credentials: %s", err)
+                return None
+            return new_auth_headers, new_mqtt_info.get("userName"), new_mqtt_info.get("pwdInfo")
+
+        async def _async_refresh_mqtt_credentials(sdk: NavimowSDK, api: MowerAPI) -> None:
+            """Token 过期或 MQTT 断连后，重新获取 MQTT 凭据并更新 SDK。"""
+            credentials = await _async_fetch_mqtt_credentials(api)
+            if credentials is None:
                 return
-            new_username = new_mqtt_info.get("userName")
-            new_password = new_mqtt_info.get("pwdInfo")
+            new_auth_headers, new_username, new_password = credentials
             if new_auth_headers or new_username or new_password:
                 # update_credentials 在断连时会调用 loop_stop()/tls_set()/load_default_certs()
                 # 等阻塞 SSL 操作，必须在 executor 中执行，避免阻塞 HA 事件循环。
                 # auth_headers 更新与 username/password 更新合并为一次 executor 调用。
-                _new_auth_headers = new_auth_headers
-                _new_username = new_username
-                _new_password = new_password
                 def _do_credential_update() -> None:
                     sdk.update_mqtt_credentials(
-                        auth_headers=_new_auth_headers,
-                        username=_new_username,
-                        password=_new_password,
+                        auth_headers=new_auth_headers,
+                        username=new_username,
+                        password=new_password,
                     )
                 await hass.async_add_executor_job(_do_credential_update)
                 health.note_credential_refresh()
@@ -367,6 +375,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "MQTT credentials refreshed from server: username=%s",
                     _mask_secret(new_username),
                 )
+
+        async def _async_rebuild_mqtt(reason: str) -> None:
+            """Tear the MQTT client down and connect afresh, on purpose.
+
+            The SDK only rebuilds its client while disconnected, which is
+            exactly what a link that died silently is not: the client still
+            believes it is connected. Holds the credential-refresh lock, so
+            the disconnect this causes does not start a second refresh.
+            """
+            if _unload_flag[0] or _mqtt_refresh_lock.locked():
+                return
+            async with _mqtt_refresh_lock:
+                if _unload_flag[0]:
+                    return
+                _LOGGER.warning("Rebuilding the MQTT connection: %s", reason)
+                health.note_rebuild(reason)
+                credentials = await _async_fetch_mqtt_credentials(api)
+                mqtt = sdk._mqtt
+
+                def _do_rebuild() -> None:
+                    if credentials is not None:
+                        auth_headers, username, password = credentials
+                        if auth_headers:
+                            mqtt.auth_headers = auth_headers
+                        if username:
+                            mqtt.username = username
+                        if password:
+                            mqtt.password = password
+                    old = mqtt.client
+                    try:
+                        old.loop_stop()
+                        old.disconnect()
+                    except Exception as err:  # noqa: BLE001 - the old client is going anyway
+                        _LOGGER.debug("Error tearing down the old MQTT client: %s", err)
+                    mqtt.client = mqtt._build_new_client()
+                    mqtt.connect_async()
+
+                # paho's teardown and TLS setup block; keep them off the loop.
+                await hass.async_add_executor_job(_do_rebuild)
 
         def _create_sdk(api: MowerAPI) -> NavimowSDK:
             sdk = NavimowSDK(
@@ -424,7 +471,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 first._async_ensure_valid_token,
             )
             health.poller = rest_poller
-            rest_poller.on_result = health.note_poll
+            watchdog = MqttWatchdog(hass, health, coordinators, _async_rebuild_mqtt)
+
+            @callback
+            def _on_poll_result() -> None:
+                health.note_poll()
+                watchdog.async_check_after_poll()
+
+            rest_poller.on_result = _on_poll_result
             for coordinator in coordinators.values():
                 coordinator.rest_poller = rest_poller
             rest_poller.async_start()

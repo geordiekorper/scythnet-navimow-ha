@@ -48,6 +48,12 @@ REST_POLL_MIN_SECONDS: Final = 30
 REST_POLL_MAX_SECONDS: Final = 600  # the most the option allows
 CONF_REST_POLL_SECONDS: Final = "rest_poll_seconds"  # entry option
 REST_POLL_MAX_BACKOFF: Final = 600
+# The cloud's REST status cache lags this long behind the mower (seconds); a
+# REST reading counts as newer than an MQTT report only past this age.
+REST_CACHE_LAG: Final = 120
+# The MQTT watchdog rebuilds the connection at most once per this long.
+WATCHDOG_DEBOUNCE: Final = 300
+
 # The last_message sensor is written at most once per this many seconds.
 LAST_MESSAGE_RESOLUTION: Final = 30
 
