@@ -33,7 +33,7 @@ from .location import (
     update_dock_estimate,
     vehicle_topic,
 )
-from .rejected import rejection_record
+from .rejected import REST_KNOWN_FIELDS, rejection_record
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -241,6 +241,28 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_state = self._device_status_to_state(status)
             self._last_data_source = "http_fallback"
         self.async_set_updated_data(self._build_data())
+
+    def get_rest_details(self) -> tuple[str | None, dict[str, Any] | None]:
+        """The latest REST reply as sent: its raw vehicleState, and the rest.
+
+        Fields outside REST_KNOWN_FIELDS are kept under ``unknown_fields`` so
+        a field the cloud starts sending is visible in history.
+        """
+        raw = self._rest_raw
+        if raw is None:
+            return None, None
+        status = self._rest_status
+        unknown = {k: v for k, v in raw.items() if k not in REST_KNOWN_FIELDS}
+        vehicle_state = raw.get("vehicleState")
+        return (
+            vehicle_state if isinstance(vehicle_state, str) else None,
+            {
+                "battery": status.battery if status else None,
+                "battery_level": raw.get("descriptiveCapacityRemaining"),
+                "polled_at": self._rest_polled_at,
+                "unknown_fields": unknown or None,
+            },
+        )
 
     def _handle_state(self, state: DeviceStateMessage) -> None:
         if state.device_id != self.device.id:

@@ -46,6 +46,11 @@ class FakeCoordinator:
     def get_rejected(self):
         return self.rejected
 
+    def get_rest_details(self):
+        return self.rest_details
+
+    rest_details = (None, None)
+
     rejected = (0, None)
 
 
@@ -103,6 +108,14 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertEqual(sensor.native_value, 3)
         self.assertEqual(sensor.extra_state_attributes, item)
         self.assertEqual(DESCRIPTIONS["rejected_input"].entity_category, "diagnostic")
+
+    def test_rest_status_shows_the_raw_state_and_the_reply(self):
+        sensor = self.sensor("rest_status")
+        self.assertIsNone(sensor.native_value)
+        attrs = {"battery": 90, "battery_level": "HIGH", "polled_at": RECEIVED, "unknown_fields": None}
+        self.coordinator.rest_details = ("isDocked", attrs)
+        self.assertEqual(sensor.native_value, "isDocked")
+        self.assertEqual(sensor.extra_state_attributes, attrs)
 
     def test_other_sensors_have_no_attributes(self):
         self.feed(FULL_TASK, POSE)

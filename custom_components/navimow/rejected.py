@@ -84,6 +84,13 @@ STATE_KNOWN_FIELDS = frozenset({
 })
 
 
+# The fields a REST status reply is known to carry (as in Scythnet). Others
+# are shown under unknown_fields on the rest_status sensor.
+REST_KNOWN_FIELDS = frozenset({
+    "id", "device_id", "deviceId", "vehicleState", "capacityRemaining",
+    "descriptiveCapacityRemaining", "battery",
+})
+
 # Channels whose content reaches the entities. The SDK also parses `event`
 # and `attributes`, but nothing here uses an event, and attributes only
 # surface as an opaque attribute of the lawn-mower entity; both are recorded

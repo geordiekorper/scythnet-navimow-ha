@@ -291,3 +291,21 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:00:00+00:00")
         await self.coordinator._async_update_data()
         self.api.async_get_device_status.assert_not_awaited()
+
+    async def test_rest_details_show_the_reply_as_sent(self):
+        self.assertEqual(self.coordinator.get_rest_details(), (None, None))
+        self.coordinator.apply_rest_status(
+            {**REST_PAYLOAD, "vehicleState": "isIdel", "signal": -61},
+            "2026-09-17T20:00:00+00:00",
+        )
+        state, attrs = self.coordinator.get_rest_details()
+        self.assertEqual(state, "isIdel")  # not the SDK's "idle"
+        self.assertEqual(attrs, {
+            "battery": 100, "battery_level": "FULL",
+            "polled_at": "2026-09-17T20:00:00+00:00",
+            "unknown_fields": {"signal": -61},
+        })
+
+    async def test_rest_details_of_a_reply_with_only_known_fields(self):
+        self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:00:00+00:00")
+        self.assertIsNone(self.coordinator.get_rest_details()[1]["unknown_fields"])
