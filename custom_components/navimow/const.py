@@ -31,6 +31,13 @@ MQTT_PORT: Final = 1883
 MQTT_USERNAME: Final | None = None
 MQTT_PASSWORD: Final | None = None
 
+# MQTT keepalive (seconds). Something between client and broker drops a link
+# that has been idle for about ten minutes without a FIN or DISCONNECT; the
+# SDK's default of 2400 s leaves such a dead link unnoticed for up to 40
+# minutes. A ping every minute keeps the link from idling that long and
+# detects a dead one within about two minutes. The broker's floor is 30 s.
+MQTT_KEEPALIVE: Final = 60
+
 # 更新间隔（秒）
 UPDATE_INTERVAL: Final = 30
 
