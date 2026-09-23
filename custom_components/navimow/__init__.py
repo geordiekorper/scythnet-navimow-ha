@@ -31,6 +31,7 @@ from .const import (
 from .coordinator import NavimowCoordinator
 from .services import async_setup_services, async_unload_services
 from .location import location_topic, parse_location_message
+from .rejected import raw_message_rejection
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.debug("Navimow module imported (__init__.py)")
@@ -260,6 +261,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 _parsed.reason, payload_text, list(_parsed.reasons),
                             )
                     return
+                # The SDK decodes the other channels, but only the fields it
+                # knows; record what it would silently lose.
+                _coord = _location_coordinators.get(device_id)
+                _channel = topic.rsplit("/", 1)[-1]
+                _reason = raw_message_rejection(_channel, payload_text)
+                if _reason is not None and _coord is not None:
+                    hass.loop.call_soon_threadsafe(
+                        _coord.record_rejected, _channel, topic, _reason, payload_text
+                    )
                 if original_on_message is not None:
                     await original_on_message(topic, payload, device_id)
 

@@ -74,3 +74,23 @@ def rejection_record(
         "payload": _cut(text, PAYLOAD_LIMIT) if truncated else text,
         "truncated": truncated,
     }
+
+
+# The fields the state channel is known to carry (as in Scythnet; the SDK adds
+# device_id). A message with others still applies and is recorded as well.
+STATE_KNOWN_FIELDS = frozenset({
+    "state", "vehicleState", "status", "battery", "capacityRemaining",
+    "timestamp", "device_id",
+})
+
+
+def raw_message_rejection(channel: str, text: str) -> str | None:
+    """Why a raw MQTT message on a non-location channel should also be
+    recorded as rejected input, or None when the decoders take all of it."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if channel == "state" and isinstance(data, dict) and not set(data) <= STATE_KNOWN_FIELDS:
+        return "unknown_field"
+    return None

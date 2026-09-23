@@ -2,7 +2,12 @@
 import json
 import unittest
 
-from custom_components.navimow.rejected import PAYLOAD_LIMIT, REASONS, rejection_record
+from custom_components.navimow.rejected import (
+    PAYLOAD_LIMIT,
+    REASONS,
+    raw_message_rejection,
+    rejection_record,
+)
 
 RECEIVED = "2026-09-23T20:00:00+00:00"
 
@@ -48,3 +53,16 @@ class RejectionRecordTest(unittest.TestCase):
             size = len(json.dumps(rec, ensure_ascii=False).encode())
             self.assertLess(size, 16384, filler)
             self.assertGreater(size, PAYLOAD_LIMIT, filler)
+
+
+class RawMessageTest(unittest.TestCase):
+    STATE = {"state": "isDocked", "battery": 100, "timestamp": 1700000000, "device_id": "dev-1"}
+
+    def test_known_state_fields_are_not_recorded(self):
+        self.assertIsNone(raw_message_rejection("state", json.dumps(self.STATE)))
+        rest_shape = {"vehicleState": "isDocked", "capacityRemaining": [], "status": "x"}
+        self.assertIsNone(raw_message_rejection("state", json.dumps(rest_shape)))
+
+    def test_unknown_state_field_is_recorded(self):
+        text = json.dumps({**self.STATE, "signal": -60})
+        self.assertEqual(raw_message_rejection("state", text), "unknown_field")
