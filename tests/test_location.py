@@ -311,12 +311,22 @@ class RestoreTest(unittest.TestCase):
     def test_zone_restores_target_and_delay(self):
         self.assertEqual(
             restore_location_groups("zone", "unknown", {"partition_ids": None, "task_delay": False}),
-            [("target", {"partition_ids": None, "partition": None}),
-             ("delay", {"task_delay": False})],
+            [("target", {"partition_ids": None, "partition": None,
+                         "target_time_ms": None, "target_last_time_ms": None}),
+             ("delay", {"task_delay": False, "delay_received_at": None})],
         )
         self.assertEqual(
-            restore_location_groups("zone", "2", {"partition_ids": [2, 3]}),
-            [("target", {"partition_ids": [2, 3], "partition": 2})],
+            restore_location_groups("zone", "2", {
+                "partition_ids": [2, 3], "target_time_ms": 1700000000010,
+                "target_last_time_ms": 1700000060010,
+            }),
+            [("target", {"partition_ids": [2, 3], "partition": 2,
+                         "target_time_ms": 1700000000010,
+                         "target_last_time_ms": 1700000060010})],
+        )
+        self.assertEqual(
+            restore_location_groups("zone", "all", {"task_delay": True, "delay_received_at": RECEIVED}),
+            [("delay", {"task_delay": True, "delay_received_at": RECEIVED})],
         )
         self.assertEqual(restore_location_groups("zone", "unknown", {}), [])
 
@@ -385,3 +395,51 @@ class TargetZoneTest(unittest.TestCase):
         parse_location_payload(cache, "dev-1", [self.ZONE_2])
         loc = parse_location_payload(cache, "dev-1", [self.NO_TARGET])
         self.assertEqual(target_zone(loc, "returning"), "none")
+
+
+class TargetAndDelayTimesTest(unittest.TestCase):
+    ZONES = {"partitionIds": [2, 3], "time": 1700000000010, "type": 3}
+
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries, received_at=RECEIVED):
+        return parse_location_payload(self.cache, "dev-1", list(entries), received_at=received_at)
+
+    def test_first_report_sets_both_times(self):
+        loc = self.parse(self.ZONES)
+        self.assertEqual(loc["target_time_ms"], 1700000000010)
+        self.assertEqual(loc["target_last_time_ms"], 1700000000010)
+
+    def test_repeat_advances_only_the_last_time(self):
+        self.parse(self.ZONES)
+        loc = self.parse({**self.ZONES, "partitionIds": [3, 2], "time": 1700000060010})
+        self.assertEqual(loc["target_time_ms"], 1700000000010)
+        self.assertEqual(loc["target_last_time_ms"], 1700000060010)
+
+    def test_change_of_target_restarts_both_times(self):
+        self.parse(self.ZONES)
+        loc = self.parse({"type": 3, "time": 1700000120010})  # no target
+        self.assertEqual(loc["target_time_ms"], 1700000120010)
+        self.assertEqual(loc["target_last_time_ms"], 1700000120010)
+
+    def test_report_without_time_keeps_none(self):
+        loc = self.parse({"type": 3, "partitionIds": [2]})
+        self.assertIsNone(loc["target_time_ms"])
+
+    def test_repeat_of_a_restored_target_keeps_its_first_time(self):
+        self.cache["dev-1"] = {
+            "device_id": "dev-1", "partition_ids": [2, 3], "partition": 2,
+            "target_time_ms": 1600000000000, "target_last_time_ms": 1600000000000,
+            "target_restored": True,
+        }
+        loc = self.parse(self.ZONES)
+        self.assertEqual(loc["target_time_ms"], 1600000000000)
+        self.assertEqual(loc["target_last_time_ms"], 1700000000010)
+
+    def test_delay_report_carries_its_receipt_time(self):
+        loc = self.parse({"type": 4, "taskDelay": True}, received_at="2026-09-17T21:00:00+00:00")
+        self.assertEqual(loc["delay_received_at"], "2026-09-17T21:00:00+00:00")
+        loc = self.parse({"time": 1, "type": 4, "vehicleState": 1}, POSE,
+                         received_at="2026-09-17T22:00:00+00:00")
+        self.assertEqual(loc["delay_received_at"], "2026-09-17T21:00:00+00:00")

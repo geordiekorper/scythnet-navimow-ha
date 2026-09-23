@@ -29,7 +29,7 @@ mower is active):
 
 | Entity | Meaning |
 | --- | --- |
-| `sensor.<mower>_zone` | Target partition id — the zone the current task is headed for (set at task start). `all` while the mower mows or pauses with no named zone (a "mow all" task), `none` when it reports no target and is not mowing (docked, returning after a dock command), `unknown` until the first target report. The full id list is in `partition_ids` |
+| `sensor.<mower>_zone` | Target partition id — the zone the current task is headed for (set at task start). `all` while the mower mows or pauses with no named zone (a "mow all" task), `none` when it reports no target and is not mowing (docked, returning after a dock command), `unknown` until the first target report. The full id list is in `partition_ids`; `target_time_ms` is the mower time of the first report of that target and `target_last_time_ms` of its latest repeat. `task_delay` is the rain/schedule delay flag, `delay_received_at` when it was last reported |
 | `sensor.<mower>_position_x` | X position in meters (local grid; origin = the RTK/mapping reference, usually *near* the dock). Attributes carry the complete latest pose: `y`, `theta_rad`, `vehicle_state`, `pose_time_ms`, `received_at`, `source` |
 | `sensor.<mower>_position_y` | Y position in meters |
 | `sensor.<mower>_heading` | Mower orientation in degrees (0–360) |

@@ -208,7 +208,10 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
             # type-3 target and type-4 delay
             return {
                 "partition_ids": loc.get("partition_ids"),
+                "target_time_ms": loc.get("target_time_ms"),
+                "target_last_time_ms": loc.get("target_last_time_ms"),
                 "task_delay": loc.get("task_delay"),
+                "delay_received_at": loc.get("delay_received_at"),
                 "is_restored": restored("target", "delay"),
             }
         if key == "position_x":

@@ -82,7 +82,10 @@ class SensorAttributesTest(unittest.TestCase):
         )
         attrs = self.sensor("zone").extra_state_attributes
         self.assertEqual(attrs["partition_ids"], [2])
+        self.assertEqual(attrs["target_time_ms"], 1700000000010)
+        self.assertEqual(attrs["target_last_time_ms"], 1700000000010)
         self.assertIs(attrs["task_delay"], False)
+        self.assertEqual(attrs["delay_received_at"], RECEIVED)
         self.assertNotIn("mow_boundary", attrs)
         self.assertNotIn("mow_progress", attrs)
 
@@ -122,7 +125,10 @@ class SensorAttributesTest(unittest.TestCase):
         self.feed(POSE)
         after = self.sensor("zone").extra_state_attributes
         self.assertEqual(before, after)
-        self.assertEqual(set(after), {"partition_ids", "task_delay", "is_restored"})
+        self.assertEqual(set(after), {
+            "partition_ids", "target_time_ms", "target_last_time_ms",
+            "task_delay", "delay_received_at", "is_restored",
+        })
 
     def test_progress_is_unknown_until_a_task_report(self):
         self.feed(POSE)

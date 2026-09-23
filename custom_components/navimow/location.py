@@ -11,9 +11,9 @@ Observed payload: a JSON array of objects keyed by ``type``:
                     (route progress 0-10000, reaches 10000 at completion), mowingPercentage,
                     subtotalArea / mowingWeekArea (m2, sent as strings), action, subAction,
                     mowStartType, mapWorkPosition (128-hex string), time (ms)}
-  type 3  zone     {partitionIds: [int]}   -> the TARGET partition (set at task start;
-                    absent for a "mow all" command)
-  type 4  delay    {taskDelay: bool}       -> rain / schedule delay
+  type 3  zone     {partitionIds: [int], time (ms)} -> the TARGET partition (set at
+                    task start; absent for a "mow all" command)
+  type 4  delay    {taskDelay: bool}       -> rain / schedule delay; no time field
 NOTE: type 3 = target zone (drives gate pre-open); type 2 currentMowBoundary = the
 live physical zone (updates only after the mower crosses). They are kept separate.
 Coordinates are a local Cartesian grid in METERS whose origin is ~the dock /
@@ -177,9 +177,14 @@ def restore_location_groups(
             groups.append(("target", {
                 "partition_ids": pids,
                 "partition": pids[0] if isinstance(pids, list) and pids else None,
+                "target_time_ms": _int(attrs.get("target_time_ms")),
+                "target_last_time_ms": _int(attrs.get("target_last_time_ms")),
             }))
         if "task_delay" in attrs:
-            groups.append(("delay", {"task_delay": attrs.get("task_delay")}))
+            groups.append(("delay", {
+                "task_delay": attrs.get("task_delay"),
+                "delay_received_at": _str(attrs.get("delay_received_at")),
+            }))
         return groups
     return []
 
@@ -229,6 +234,11 @@ def progress_percent(loc: dict | None) -> tuple[float | None, str]:
     if pct is not None:
         return pct, "percentage"
     return None, "none"
+
+
+def _zone_set(pids: Any) -> frozenset:
+    """A target report's zones as a set: the vendor's list order means nothing."""
+    return frozenset(pids) if isinstance(pids, list) else frozenset()
 
 
 def parse_location_message(
@@ -282,6 +292,13 @@ def parse_location_message(
             changed = True
         elif t == 3:
             pids = item.get("partitionIds")
+            entry_time = _int(item.get("time"))
+            # target_time_ms is the mower time of the first report of this
+            # target; a repeat of the same set only advances
+            # target_last_time_ms, so each repeat is still recorded.
+            if "partition_ids" not in loc or _zone_set(pids) != _zone_set(loc["partition_ids"]):
+                loc["target_time_ms"] = entry_time
+            loc["target_last_time_ms"] = entry_time
             loc["partition_ids"] = pids
             loc["partition"] = pids[0] if isinstance(pids, list) and pids else None
             loc.pop("target_restored", None)
@@ -292,6 +309,8 @@ def parse_location_message(
             # and must not clear the last value; the pose carries the state.
             if "taskDelay" in item:
                 loc["task_delay"] = item.get("taskDelay")
+                # The delay report carries no time of its own.
+                loc["delay_received_at"] = received_at
                 loc.pop("delay_restored", None)
                 changed = True
         if changed:
