@@ -609,6 +609,23 @@ class HighWaterTest(unittest.TestCase):
         self.assertEqual(result.snapshots[0]["x"], 3.0)
         self.assertEqual(self.parse({"type": 4, "taskDelay": True}).reasons, [])
 
+    def test_untimed_entry_does_not_reset_the_mark(self):
+        self.parse({**POSE, "postureX": "5.000", "time": 1700000010000})
+        untimed = {k: v for k, v in POSE.items() if k != "time"} | {"postureX": "6.000"}
+        self.assertEqual(self.parse(untimed).snapshots[0]["x"], 6.0)
+        late = self.parse(POSE)  # stamped before the newest timed pose
+        self.assertEqual(late.reason, "stale")
+        self.assertEqual(self.cache["dev-1"]["x"], 6.0)
+
+    def test_untimed_task_and_target_keep_their_marks(self):
+        self.parse({**FULL_TASK, "time": 1700000100000},
+                   {"type": 3, "partitionIds": [2], "time": 1700000100000})
+        self.parse({k: v for k, v in FULL_TASK.items() if k != "time"},
+                   {"type": 3, "partitionIds": [2]})
+        result = self.parse(FULL_TASK, {"type": 3, "partitionIds": [5], "time": 1700000000010})
+        self.assertEqual(result.snapshots, [])
+        self.assertEqual(result.reasons, ["stale"])
+
     def test_restored_state_seeds_the_marks(self):
         # What restore_location_groups puts back after a restart.
         self.cache["dev-1"] = {

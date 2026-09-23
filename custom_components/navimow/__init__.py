@@ -1,6 +1,7 @@
 """The Navimow integration."""
 import asyncio
 import json
+from collections import deque
 import logging
 from typing import Any
 from urllib.parse import urlparse
@@ -176,6 +177,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         health = CollectorHealth()
         _location_cache: dict[str, dict] = {}
         _location_coordinators: dict[str, Any] = {}
+        # Location messages that arrive before the sensors have restored
+        # their last states wait here, and are parsed once restore is done:
+        # parsed earlier, a late one would fill the cache, restore would
+        # then skip the newer restored group, and its time could not guard.
+        # (Bounded: a pose every 2 s, and setup takes seconds.)
+        _location_backlog: deque[tuple[str, str, str, str]] = deque(maxlen=500)
+        _location_ready: list[bool] = [False]
+
+        def _process_location(topic: str, payload_text: str, device_id: str, received_at: str) -> None:
+            try:
+                _data = json.loads(payload_text)
+            except (ValueError, TypeError):
+                _data = None
+            # One snapshot per entry, published in order, so every
+            # pose of a multi-pose message reaches the recorder.
+            _coord = _location_coordinators.get(device_id)
+            _parsed = parse_location_message(
+                _location_cache, device_id, _data, received_at=received_at
+            )
+            if _coord is not None:
+                for _loc in _parsed.snapshots:
+                    hass.loop.call_soon_threadsafe(_coord.ingest_location, _loc)
+                if _parsed.reason is not None:
+                    # The whole message, once, with every reason.
+                    hass.loop.call_soon_threadsafe(
+                        _coord.record_rejected, "location", topic,
+                        _parsed.reason, payload_text, list(_parsed.reasons),
+                    )
         _mqtt_refresh_lock = asyncio.Lock()
         # 用列表作为可变标志容器，使 async_unload_entry（不同函数作用域）可以修改它
         _unload_flag: list[bool] = [False]
@@ -249,26 +278,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if device_id:
                     health.note_message(device_id, topic.rsplit("/", 1)[-1])
                 if device_id and topic.endswith("/realtimeDate/location"):
-                    received_at = dt_util.utcnow().isoformat()
-                    try:
-                        _data = json.loads(payload_text)
-                    except (ValueError, TypeError):
-                        _data = None
-                    # One snapshot per entry, published in order, so every
-                    # pose of a multi-pose message reaches the recorder.
-                    _coord = _location_coordinators.get(device_id)
-                    _parsed = parse_location_message(
-                        _location_cache, device_id, _data, received_at=received_at
-                    )
-                    if _coord is not None:
-                        for _loc in _parsed.snapshots:
-                            hass.loop.call_soon_threadsafe(_coord.ingest_location, _loc)
-                        if _parsed.reason is not None:
-                            # The whole message, once, with every reason.
-                            hass.loop.call_soon_threadsafe(
-                                _coord.record_rejected, "location", topic,
-                                _parsed.reason, payload_text, list(_parsed.reasons),
-                            )
+                    item = (topic, payload_text, device_id, dt_util.utcnow().isoformat())
+                    if not _location_ready[0]:
+                        _location_backlog.append(item)
+                        return
+                    _process_location(*item)
                     return
                 # The SDK decodes the other channels, but only the fields it
                 # knows, and nothing here uses the event or attributes
@@ -509,6 +523,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # 转发到平台
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        # The sensors have restored their last states: parse what waited.
+        _location_ready[0] = True
+        for item in _location_backlog:
+            _process_location(*item)
+        _location_backlog.clear()
         async_setup_services(hass)
 
         return True

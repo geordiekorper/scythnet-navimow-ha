@@ -308,21 +308,30 @@ class ParsedLocation:
         return next((r for r in REASON_PRIORITY if r in self.reasons), None)
 
 
+# Per-type high-water marks kept in the record, apart from the entry times
+# the sensors show: an entry without a time must not reset the mark.
+MARK_KEYS = {1: "mark_pose_ms", 2: "mark_task_ms", 3: "mark_target_ms"}
+
+
 def newest_time(loc: dict[str, Any], entry_type: Any) -> int | None:
     """Mower time of the newest applied entry of ``entry_type``, or None.
 
     This is the per-type high-water mark: messages arrive late and out of
-    order, and an entry at or below it is not applied. It is read from the
-    record itself, so the restored sensor states seed it after a restart.
-    Type 4 carries no time and is never guarded.
+    order, and an entry at or below it is not applied. It is the kept mark
+    or the time of the entry the record holds, whichever is newer, so the
+    restored sensor states seed it after a restart. Type 4 carries no time
+    and is never guarded.
     """
     if entry_type == 1:
-        return _int(loc.get("pose_time"))
-    if entry_type == 2:
-        return _int((loc.get("task") or {}).get("task_time_ms"))
-    if entry_type == 3:
-        return _int(loc.get("target_last_time_ms"))
-    return None
+        shown = _int(loc.get("pose_time"))
+    elif entry_type == 2:
+        shown = _int((loc.get("task") or {}).get("task_time_ms"))
+    elif entry_type == 3:
+        shown = _int(loc.get("target_last_time_ms"))
+    else:
+        return None
+    times = [t for t in (_int(loc.get(MARK_KEYS[entry_type])), shown) if t is not None]
+    return max(times) if times else None
 
 
 def _zone_set(pids: Any) -> frozenset:
@@ -431,6 +440,8 @@ def parse_location_message(
             loc.pop("delay_restored", None)
             changed = True
         if changed:
+            if entry_time is not None and t in MARK_KEYS:
+                loc[MARK_KEYS[t]] = entry_time
             result.snapshots.append(dict(loc))
     if result.snapshots:
         cache[device_id] = loc
