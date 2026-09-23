@@ -356,14 +356,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async def _async_refresh_mqtt_credentials(sdk: NavimowSDK, api: MowerAPI) -> None:
             """Token 过期或 MQTT 断连后，重新获取 MQTT 凭据并更新 SDK。"""
             credentials = await _async_fetch_mqtt_credentials(api)
-            if credentials is None:
-                return
+            if credentials is None or _unload_flag[0]:
+                return  # the entry may have unloaded during the fetch
             new_auth_headers, new_username, new_password = credentials
             if new_auth_headers or new_username or new_password:
                 # update_credentials 在断连时会调用 loop_stop()/tls_set()/load_default_certs()
                 # 等阻塞 SSL 操作，必须在 executor 中执行，避免阻塞 HA 事件循环。
                 # auth_headers 更新与 username/password 更新合并为一次 executor 调用。
                 def _do_credential_update() -> None:
+                    if _unload_flag[0]:
+                        return
                     sdk.update_mqtt_credentials(
                         auth_headers=new_auth_headers,
                         username=new_username,
@@ -392,9 +394,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.warning("Rebuilding the MQTT connection: %s", reason)
                 health.note_rebuild(reason)
                 credentials = await _async_fetch_mqtt_credentials(api)
+                if _unload_flag[0]:
+                    return  # unloaded during the fetch: start nothing
                 mqtt = sdk._mqtt
 
                 def _do_rebuild() -> None:
+                    if _unload_flag[0]:
+                        return
                     if credentials is not None:
                         auth_headers, username, password = credentials
                         if auth_headers:
@@ -497,6 +503,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "coordinators": coordinators,
             "oauth_session": oauth_session,
             "unload_flag": _unload_flag,
+            "mqtt_lock": _mqtt_refresh_lock,
         }
 
         # 转发到平台
@@ -532,10 +539,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 data["unload_flag"][0] = True
             sdk = data.get("sdk")
             if sdk:
+                # A rebuild or credential refresh in flight holds this lock
+                # and may be about to start a new client: let it finish, so
+                # the client disconnected here is the last one.
+                lock = data.get("mqtt_lock")
+                if lock is not None:
+                    await lock.acquire()
                 try:
                     sdk.disconnect()
                 except Exception as err:
                     _LOGGER.warning("Error disconnecting MQTT: %s", err)
+                finally:
+                    if lock is not None:
+                        lock.release()
 
             hass.data[DOMAIN].pop(entry.entry_id)
         async_unload_services(hass)
