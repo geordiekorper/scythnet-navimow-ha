@@ -75,7 +75,9 @@ class RestPoller:
         self.last_poll_at: str | None = None
         self.last_error: str | None = None
         self.last_error_at: str | None = None
-        self.on_result: Callable[[], None] | None = None
+        # Called after every poll with whether it succeeded; a successful
+        # poll's replies have been applied by then.
+        self.on_result: Callable[[bool], None] | None = None
 
     @callback
     def async_start(self) -> None:
@@ -147,19 +149,19 @@ class RestPoller:
             if not self._stopped:
                 self._schedule(delay)
             if self.on_result is not None:
-                self.on_result()
+                self.on_result(False)
             return
         self._failures = 0
         self.last_error = None
         self.last_error_at = None
         self.last_poll_at = dt_util.utcnow().isoformat()
-        if self.on_result is not None:
-            self.on_result()
         for raw in statuses:
             coordinator = self.coordinators.get(str(raw.get("id") or raw.get("device_id") or ""))
             if coordinator is None:
                 _LOGGER.debug("REST status for an unknown device: %s", raw.get("id"))
                 continue
             coordinator.apply_rest_status(raw, self.last_poll_at)
+        if self.on_result is not None:
+            self.on_result(True)
         if not self._stopped:
             self._schedule(self.interval)

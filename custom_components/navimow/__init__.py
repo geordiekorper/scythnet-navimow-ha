@@ -480,9 +480,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             watchdog = MqttWatchdog(hass, health, coordinators, _async_rebuild_mqtt)
 
             @callback
-            def _on_poll_result() -> None:
+            def _on_poll_result(ok: bool) -> None:
                 health.note_poll()
-                watchdog.async_check_after_poll()
+                if ok:  # the mismatch rule needs this poll's replies
+                    watchdog.async_check_after_poll()
 
             rest_poller.on_result = _on_poll_result
             watchdog.async_start()

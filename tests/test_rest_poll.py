@@ -80,6 +80,13 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         self.api._async_request.assert_not_awaited()
         self.assertEqual(self.poller.next_delay, 240)
 
+    async def test_outcome_is_reported_after_the_replies_are_applied(self):
+        seen = []
+        self.coordinators["dev-1"].apply_rest_status.side_effect = lambda *a: seen.append("applied")
+        self.poller.on_result = lambda ok: seen.append(("result", ok))
+        await self.poller.async_poll()
+        self.assertEqual(seen, ["applied", ("result", True)])
+
     async def test_first_poll_comes_soon_after_start(self):
         self.assertEqual(self.poller.next_delay, 5)
 
@@ -107,7 +114,7 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         await self.poller.async_poll()
         self.api._async_request.side_effect = MowerAPIError("HTTP 500")
         await self.poller.async_poll()
-        self.assertEqual(self.poller.on_result.call_count, 2)
+        self.assertEqual([c.args for c in self.poller.on_result.call_args_list], [(True,), (False,)])
         self.api._async_request.side_effect = None
         await self.poller.async_poll()
         self.assertIsNone(self.poller.last_error_at)
