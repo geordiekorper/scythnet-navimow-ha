@@ -66,3 +66,10 @@ class RawMessageTest(unittest.TestCase):
     def test_unknown_state_field_is_recorded(self):
         text = json.dumps({**self.STATE, "signal": -60})
         self.assertEqual(raw_message_rejection("state", text), "unknown_field")
+
+    def test_event_attributes_and_other_channels_are_recorded(self):
+        event = json.dumps({"event": "bladeBlocked", "timestamp": 1700000000})
+        self.assertEqual(raw_message_rejection("event", event), "unknown_channel")
+        attrs = json.dumps({"attributes": {"firmware": "1.2"}})
+        self.assertEqual(raw_message_rejection("attributes", attrs), "unknown_channel")
+        self.assertEqual(raw_message_rejection("telemetry", "{}"), "unknown_channel")

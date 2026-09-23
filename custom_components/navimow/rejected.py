@@ -84,9 +84,18 @@ STATE_KNOWN_FIELDS = frozenset({
 })
 
 
+# Channels whose content reaches the entities. The SDK also parses `event`
+# and `attributes`, but nothing here uses an event, and attributes only
+# surface as an opaque attribute of the lawn-mower entity; both are recorded
+# whole so their content can be studied once a mower sends any.
+DECODED_CHANNELS = frozenset({"state", "location"})
+
+
 def raw_message_rejection(channel: str, text: str) -> str | None:
     """Why a raw MQTT message on a non-location channel should also be
     recorded as rejected input, or None when the decoders take all of it."""
+    if channel not in DECODED_CHANNELS:
+        return "unknown_channel"
     try:
         data = json.loads(text)
     except ValueError:

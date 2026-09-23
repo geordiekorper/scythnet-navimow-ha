@@ -262,7 +262,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             )
                     return
                 # The SDK decodes the other channels, but only the fields it
-                # knows; record what it would silently lose.
+                # knows, and nothing here uses the event or attributes
+                # channels; record what would otherwise be lost.
                 _coord = _location_coordinators.get(device_id)
                 _channel = topic.rsplit("/", 1)[-1]
                 _reason = raw_message_rejection(_channel, payload_text)
