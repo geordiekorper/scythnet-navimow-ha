@@ -625,3 +625,21 @@ class HighWaterTest(unittest.TestCase):
         self.assertEqual(self.cache["dev-1"]["x"], 7.0)
         newer = self.parse({**POSE, "time": 1700000060000})
         self.assertEqual(newer.snapshots[0]["x"], 1.5)
+
+
+class UnparsableLocationTest(unittest.TestCase):
+    def setUp(self):
+        self.cache = {}
+
+    def test_payload_that_is_not_json_is_unparsable(self):
+        for data in (None, "text", 5):
+            result = self.parse_raw(data)
+            self.assertEqual((result.snapshots, result.reason), ([], "unparsable"), data)
+
+    def test_lone_entry_object_is_one_entry(self):
+        result = self.parse_raw(POSE)
+        self.assertEqual(result.snapshots[0]["x"], 1.5)
+        self.assertIsNone(result.reason)
+
+    def parse_raw(self, data):
+        return parse_location_message(self.cache, "dev-1", data, received_at=RECEIVED)

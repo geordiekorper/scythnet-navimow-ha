@@ -73,3 +73,10 @@ class RawMessageTest(unittest.TestCase):
         attrs = json.dumps({"attributes": {"firmware": "1.2"}})
         self.assertEqual(raw_message_rejection("attributes", attrs), "unknown_channel")
         self.assertEqual(raw_message_rejection("telemetry", "{}"), "unknown_channel")
+
+    def test_state_that_is_not_a_json_object_is_unparsable(self):
+        for text in ("not json", "", "[1, 2]", '"isDocked"', "{broken"):
+            self.assertEqual(raw_message_rejection("state", text), "unparsable", text)
+
+    def test_location_is_left_to_its_parser(self):
+        self.assertIsNone(raw_message_rejection("location", "not json"))

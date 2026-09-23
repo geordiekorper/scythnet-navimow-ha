@@ -96,10 +96,14 @@ def raw_message_rejection(channel: str, text: str) -> str | None:
     recorded as rejected input, or None when the decoders take all of it."""
     if channel not in DECODED_CHANNELS:
         return "unknown_channel"
+    if channel == "location":
+        return None  # the location parser judges its own messages
     try:
         data = json.loads(text)
     except ValueError:
-        return None
-    if channel == "state" and isinstance(data, dict) and not set(data) <= STATE_KNOWN_FIELDS:
+        return "unparsable"  # the SDK drops it before any callback
+    if not isinstance(data, dict):
+        return "unparsable"
+    if not set(data) <= STATE_KNOWN_FIELDS:
         return "unknown_field"
     return None

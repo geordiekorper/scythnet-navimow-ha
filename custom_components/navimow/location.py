@@ -346,9 +346,13 @@ def parse_location_message(
     order, so a message carrying several poses or task entries publishes each
     of them, and the reasons any entry was not applied (REASON_PRIORITY).
     ``now_ms`` is the receipt time the plausibility window is measured from.
+    ``data`` is the decoded JSON, or None when the payload was not JSON.
     """
     result = ParsedLocation()
+    if isinstance(data, dict):
+        data = [data]  # a lone entry, not wrapped in the usual array
     if not isinstance(data, list):
+        result.reject("unparsable")  # not JSON, or neither array nor object
         return result
     now_ms = round(time.time() * 1000) if now_ms is None else now_ms
     loc = dict(cache.get(device_id) or {})
