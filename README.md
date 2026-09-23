@@ -125,6 +125,9 @@ and close it again once docked. See
 [`examples/gate-automation/SETUP.md`](examples/gate-automation/SETUP.md) for the
 full walkthrough (it also includes a live position **map card**,
 `navimow-map-card.js`).
+`install-dashboard.py` in the same folder installs that card and a ready-made
+Navimow dashboard for your entity IDs over the WebSocket API (see the
+"Scripted install" section of the walkthrough).
 
 ## Prerequisites 📋
 

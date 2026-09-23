@@ -1,0 +1,93 @@
+{
+  "title": "${title}",
+  "views": [
+    {
+      "title": "Overview",
+      "path": "overview",
+      "type": "sections",
+      "max_columns": 2,
+      "sections": [
+        {
+          "type": "grid",
+          "column_span": 2,
+          "cards": [
+            { "type": "heading", "heading": "${name}", "heading_style": "title" },
+            { "type": "tile", "entity": "${mower}", "name": "Mower status", "icon": "mdi:robot-mower" },
+            { "type": "tile", "entity": "${battery}", "name": "Battery" },
+            { "type": "tile", "entity": "${mow_progress}", "name": "Mowing progress", "icon": "mdi:progress-check" },
+            { "type": "tile", "entity": "${mowing_zone}", "name": "Current zone", "icon": "mdi:map-marker" },
+            { "type": "tile", "entity": "${zone}", "name": "Target zone", "icon": "mdi:map-marker-check" }
+          ]
+        },
+        {
+          "type": "grid",
+          "column_span": 2,
+          "cards": [
+            { "type": "heading", "heading": "Position & path", "heading_style": "title" },
+            {
+              "type": "custom:navimow-map-card",
+              "title": "${name}",
+              "x_entity": "${position_x}",
+              "y_entity": "${position_y}",
+              "heading_entity": "${heading}",
+              "zone_entity": "${zone}",
+              "status_entity": "${mower}",
+              "battery_entity": "${battery}",
+              "dock_x_entity": "${dock_x}",
+              "dock_y_entity": "${dock_y}",
+              "grid_options": { "columns": "full" }
+            },
+            {
+              "type": "iframe",
+              "url": "${scythnet_card}",
+              "aspect_ratio": "75%",
+              "grid_options": { "columns": "full", "rows": 8 }
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "cards": [
+            { "type": "heading", "heading": "Position details", "heading_style": "title" },
+            {
+              "type": "entities",
+              "show_header_toggle": false,
+              "entities": [
+                { "type": "section", "label": "Mower position" },
+                { "entity": "${position_x}", "name": "Position X" },
+                { "entity": "${position_y}", "name": "Position Y" },
+                { "entity": "${heading}", "name": "Heading" },
+                { "type": "section", "label": "Dock position" },
+                { "entity": "${dock_x}", "name": "Dock X" },
+                { "entity": "${dock_y}", "name": "Dock Y" },
+                { "type": "section", "label": "Updates" },
+                { "entity": "${data_source}", "name": "Data source" }
+              ],
+              "grid_options": { "columns": "full" }
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "cards": [
+            { "type": "heading", "heading": "Last 24 hours", "heading_style": "title" },
+            {
+              "type": "history-graph",
+              "title": "Mower activity",
+              "hours_to_show": 24,
+              "entities": [ { "entity": "${mower}", "name": "Mower" } ],
+              "grid_options": { "columns": "full" }
+            },
+            {
+              "type": "history-graph",
+              "title": "Battery",
+              "hours_to_show": 24,
+              "entities": [ { "entity": "${battery}", "name": "Battery" } ],
+              "grid_options": { "columns": "full" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

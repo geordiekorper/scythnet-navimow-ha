@@ -178,7 +178,104 @@ shows the same path on every device. It resets automatically when a new session
 starts. Requires the recorder (on by default) to be recording the position
 sensors; if it isn't, the card falls back to a live-only trail.
 
-1. Copy it to `<config>/www/navimow-map-card.js`.
+### Scripted install (recommended)
+
+`install-dashboard.py` (next to the card) does the whole setup over Home
+Assistant's WebSocket API: copies the card into `www/` (optional), registers the
+Lovelace resource, looks up **your** entity IDs in the entity registry, and
+creates a dedicated **Navimow** dashboard from `navimow-dashboard.json` (status
+tiles, the map card, position details, 24 h history). Python 3.9+, standard
+library only.
+
+1. Get the files: clone this repo or download it as a zip (HACS only installs
+   the integration, not `examples/`).
+2. Create a long-lived access token: your profile (bottom-left) → **Security** →
+   **Long-lived access tokens** → Create. The account must be an administrator.
+3. Run it, pointing at your instance:
+
+   ```bash
+   cd examples/gate-automation
+   python3 install-dashboard.py --url http://homeassistant.local:8123 --token 'eyJ…'
+   ```
+
+   Add `--config-dir /path/to/config` if the machine can see your HA config
+   directory (same host, Samba share, or inside the container) and the script
+   copies `navimow-map-card.js` into `www/` for you. Otherwise copy it there
+   first — the script checks that `/local/navimow-map-card.js` is actually
+   served before registering it. If `www/` did not exist before, restart Home
+   Assistant once so it starts serving `/local/`.
+
+4. Open `http://<ha>/dashboard-navimow` (reload the browser once so it picks up
+   the new resource).
+
+Useful flags:
+
+| Flag | Effect |
+|---|---|
+| `--print` | Print the filled dashboard config as JSON and change nothing. Paste it into any dashboard's raw configuration editor, or save it as the file of a YAML-mode dashboard (JSON is valid YAML). |
+| `--overwrite` | Replace the dashboard if it already exists — use this after upgrading the card or the integration. The map card's `overlay_image`, `overlay_opacity`, `calibration`, `straighten`, `dock_x`/`dock_y` and trail settings are carried over from the existing dashboard. |
+| `--url-path`, `--title` | Where the dashboard lives (default `dashboard-navimow`, must contain a hyphen) and its sidebar title (default: the mower's device name). |
+| `--mower NAME` | Pick one device when several Navimows are set up; give each its own `--url-path`. |
+| `--scythnet-url URL` | Put Scythnet's map, a **Webpage** card, in the place of the position map card. See [Scythnet map card](#scythnet-map-card). |
+| `HASS_TOKEN` | Environment variable alternative to `--token`. |
+
+Notes:
+
+- The resource URL gets a `?v=<hash of the served file>` tag, so re-running
+  after updating `www/navimow-map-card.js` bumps the version and browsers fetch
+  the new file.
+- Entity IDs are resolved from the entity registry by `unique_id`, so renamed
+  entities and multiple mowers work. Entities that do not exist (older
+  integration versions without dock sensors, for example) are left out of the
+  dashboard.
+- If your Lovelace resources are managed in YAML (`lovelace: mode: yaml` /
+  `resources:` in `configuration.yaml`), the script prints the resource entry
+  to add instead of registering it.
+- To change the default layout, edit `navimow-dashboard.json`. The `${…}`
+  placeholders are `mower`, `battery`, `position_x`, `position_y`, `heading`,
+  `zone`, `mowing_zone`, `dock_x`, `dock_y`, `mow_progress`, `data_source`,
+  plus `name` (device name) and `title`. A card or row whose `entity`
+  placeholder cannot be resolved is dropped, and so is a section label or card
+  left with no entities under it.
+
+### Scythnet map card
+
+[Scythnet](https://github.com/geordiekorper/scythnet) keeps its own record of the
+mower and draws a richer map: the mowed band, where the mower got stuck, an aerial
+photo under the track, replays of past trips. Its page has a card view made for a
+dashboard's frame, with the live map, the session picker for past trips and the
+problem spots, and the playback bar. `--scythnet-url http://scythnet.local:5055`
+(the address the dashboard's browser reaches it by) puts it, as a **Webpage**
+card, in the place of the position map card (the map card's resource is then not
+installed), pointing at `<url>/?view=card&device=<serial>`; the serial picks the
+mower when the account has several. Two things on the Scythnet side:
+
+- Put the dashboard's origin in Scythnet's `SCYTHNET_FRAME_ANCESTORS`, every
+  address the dashboard is opened by, space-separated
+  (`http://homeassistant.local:8123 http://192.168.1.20:8123`), and restart it;
+  the page allows framing only by the origins listed, so anything else gets a
+  blank frame.
+- A dashboard opened over HTTPS cannot frame a page served over plain HTTP, so
+  either open the dashboard over HTTP on the LAN or put Scythnet behind TLS.
+
+By hand, the same card in the dashboard editor's YAML:
+
+```yaml
+type: iframe
+url: http://scythnet.local:5055/?view=card&device=<serial>
+aspect_ratio: 75%
+grid_options:
+  columns: full
+  rows: 8
+```
+
+In a sections dashboard the card's height is its `rows` (about 56 px each) and
+`aspect_ratio` is ignored; in the older masonry layout it is the other way round.
+Raise or lower `rows` until the map suits your screen.
+
+### Manual install
+
+1. Copy `navimow-map-card.js` to `<config>/www/navimow-map-card.js`.
 2. Settings → Dashboards → ⋮ → Resources → add `/local/navimow-map-card.js?v=1`
    as a **JavaScript Module** (the `?v=N` query dodges the frontend cache — bump it
    when you update the file).
