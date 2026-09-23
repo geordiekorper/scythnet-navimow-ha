@@ -70,9 +70,16 @@ class MqttWatchdog:
     @callback
     def async_start(self) -> None:
         """Start the periodic location-silence check (rule 2)."""
+        # The handler must be a @callback: HA runs a plain function passed
+        # to a timer in an executor thread, where the rebuild task could
+        # not be created.
         self._cancel_timer = async_track_time_interval(
-            self.hass, lambda _now: self.async_check_silence(), timedelta(seconds=CHECK_SECONDS)
+            self.hass, self._on_timer, timedelta(seconds=CHECK_SECONDS)
         )
+
+    @callback
+    def _on_timer(self, _now: Any) -> None:
+        self.async_check_silence()
 
     @callback
     def async_stop(self) -> None:

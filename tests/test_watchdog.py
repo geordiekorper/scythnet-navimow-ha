@@ -3,9 +3,9 @@ import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HassJob, HassJobType, HomeAssistant
 
 from custom_components.navimow.health import CollectorHealth
 from custom_components.navimow.watchdog import MqttWatchdog
@@ -166,3 +166,14 @@ class LocationSilenceTest(WatchdogTestCase):
         self.assertIsNotNone(self.watchdog._cancel_timer)
         self.watchdog.async_stop()
         self.assertIsNone(self.watchdog._cancel_timer)
+
+    async def test_timer_runs_the_check_on_the_event_loop(self):
+        # A plain function would be an executor job; creating the rebuild
+        # task from that thread is refused by HA.
+        with patch("custom_components.navimow.watchdog.async_track_time_interval") as track:
+            self.watchdog.async_start()
+        action = track.call_args.args[1]
+        self.assertEqual(HassJob(action).job_type, HassJobType.Callback)
+        self.now += 180
+        action(None)
+        self.assertEqual(len(await self.rebuilds()), 1)
