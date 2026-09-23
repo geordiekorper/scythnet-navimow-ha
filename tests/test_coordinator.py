@@ -338,3 +338,21 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
             parse_location_payload({}, "dev-1", [POSE], received_at=RECEIVED)
         )
         self.assertTrue(self.coordinator.get_watch_view(time.monotonic())["has_pose"])
+
+    async def test_raw_state_check_catches_a_late_message_first(self):
+        newer = {"state": "isDocked", "timestamp": 1700000060000, "battery": 90}
+        older = {"state": "isRunning", "timestamp": 1700000000000, "battery": 91}
+        self.assertIsNone(self.coordinator.check_raw_state(newer))
+        # the older one arrives before the newer has reached the coordinator
+        self.assertEqual(self.coordinator.check_raw_state(older), "stale")
+        self.assertIsNone(self.coordinator.check_raw_state(dict(newer)))  # equal time
+        self.assertEqual(self.coordinator.check_raw_state({"timestamp": 5}), "implausible_time")
+        self.assertIsNone(self.coordinator.check_raw_state({"state": "isDocked"}))
+        self.assertIsNone(self.coordinator.check_raw_state([1]))
+
+    async def test_raw_check_and_the_backstop_agree_on_the_newer_message(self):
+        self.assertIsNone(self.coordinator.check_raw_state({"timestamp": 1700000060000}))
+        newer = mqtt_message(state="docked", timestamp=1700000060000)
+        self.coordinator._update_from_state(newer)
+        self.assertIs(self.coordinator.get_device_state(), newer)
+        self.assertEqual(self.coordinator.get_rejected()[0], 0)

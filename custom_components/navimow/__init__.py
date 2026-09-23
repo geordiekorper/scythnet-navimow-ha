@@ -290,6 +290,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _coord = _location_coordinators.get(device_id)
                 _channel = topic.rsplit("/", 1)[-1]
                 _reason = raw_message_rejection(_channel, payload_text)
+                if _channel == "state" and _coord is not None:
+                    try:
+                        _stamp_reason = _coord.check_raw_state(json.loads(payload_text))
+                    except ValueError:
+                        _stamp_reason = None
+                    if _stamp_reason is not None:
+                        # Late or implausibly stamped: recorded as received,
+                        # and never handed to the SDK, so it cannot become
+                        # the current state or the SDK's cached one.
+                        _coord.record_rejected(
+                            _channel, topic, _stamp_reason, payload_text,
+                            [_stamp_reason] + ([_reason] if _reason else []),
+                        )
+                        return
                 if _reason is not None and _coord is not None:
                     hass.loop.call_soon_threadsafe(
                         _coord.record_rejected, _channel, topic, _reason, payload_text

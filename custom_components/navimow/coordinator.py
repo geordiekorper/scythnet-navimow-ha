@@ -329,7 +329,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _state_rejection(self, state: DeviceStateMessage) -> str | None:
         """Why an MQTT state message must not become the current state, or
         None. A message without a timestamp is applied as it arrives."""
-        stamp = mower_time_ms(state.timestamp)
+        return self._stamp_rejection(mower_time_ms(state.timestamp))
+
+    def _stamp_rejection(self, stamp: int | None) -> str | None:
         if stamp is None:
             return None
         if not plausible_time(stamp, round(time.time() * 1000)):
@@ -337,6 +339,22 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._mqtt_state_time_ms is not None and stamp < self._mqtt_state_time_ms:
             return "stale"
         return None
+
+    def check_raw_state(self, data: Any) -> str | None:
+        """Judge a raw state message before the SDK sees it (MQTT hook).
+
+        Returns why it must not be applied, or None; an accepted message
+        advances the mark at once, so a late one arriving before this one
+        reaches the coordinator is still caught here, where the payload
+        can be recorded as received.
+        """
+        if not isinstance(data, dict):
+            return None
+        stamp = mower_time_ms(data.get("timestamp"))
+        reason = self._stamp_rejection(stamp)
+        if reason is None and stamp is not None:
+            self._mqtt_state_time_ms = max(stamp, self._mqtt_state_time_ms or stamp)
+        return reason
 
     def _adopt_mqtt_state(
         self, state: DeviceStateMessage, source: str, received_at: str | None = None
@@ -351,7 +369,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt_received_monotonic = time.monotonic()
         stamp = mower_time_ms(state.timestamp)
         if stamp is not None:
-            self._mqtt_state_time_ms = stamp
+            self._mqtt_state_time_ms = max(stamp, self._mqtt_state_time_ms or stamp)
         self._last_state = state
         self._last_data_source = source
 
