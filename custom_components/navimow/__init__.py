@@ -34,12 +34,13 @@ from .coordinator import NavimowCoordinator
 from .services import async_setup_services, async_unload_services
 from .location import location_topic, parse_location_message
 from .rejected import raw_message_rejection
+from .health import CollectorHealth, instrument_mqtt
 from .rest_poll import RestPoller
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.debug("Navimow module imported (__init__.py)")
 
-PLATFORMS: list[Platform] = [Platform.LAWN_MOWER, Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.LAWN_MOWER, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -387,6 +388,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         sdk = await hass.async_add_executor_job(_create_sdk, api)
         _attach_mqtt_debug_hooks(sdk, api)
+        health = CollectorHealth()
+        instrument_mqtt(sdk._mqtt, hass.loop, health)
         hass.async_create_task(_probe_mqtt_status(sdk))
 
         coordinators: dict[str, NavimowCoordinator] = {}
@@ -424,6 +427,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # 存储数据
         hass.data[DOMAIN][entry.entry_id] = {
             "rest_poller": rest_poller,
+            "health": health,
             "sdk": sdk,
             "api": api,
             "devices": devices,
