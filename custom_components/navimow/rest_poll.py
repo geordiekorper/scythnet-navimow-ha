@@ -14,6 +14,7 @@ succeeds.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -54,6 +55,8 @@ async def async_fetch_statuses(api: MowerAPI, device_ids: list[str]) -> list[dic
 class RestPoller:
     """Polls REST status for one config entry's mowers on a fixed interval."""
 
+    _clock = staticmethod(time.monotonic)
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -69,6 +72,10 @@ class RestPoller:
         self._ensure_token = ensure_token
         self._cancel: CALLBACK_TYPE | None = None
         self._due_in: float | None = None
+        self._due_at: float | None = None  # monotonic deadline of the pending poll
+        self._polling = False
+        self._requested_at: float | None = None  # asked for while polling
+        self._next_delay: float = self.interval
         self._failures = 0
         self._stopped = True
         # Outcome of the latest poll, for diagnostics, and who to tell.
@@ -90,21 +97,29 @@ class RestPoller:
     @callback
     def async_stop(self) -> None:
         self._stopped = True
+        self._requested_at = None
         self._cancel_timer()
 
     @callback
     def async_set_interval(self, interval: int) -> None:
-        """Change the interval; the next poll is rescheduled from now."""
+        """Change the interval; the next poll is rescheduled from now (or
+        from the end of the poll under way)."""
         self.interval = max(REST_POLL_MIN_SECONDS, int(interval))
-        if not self._stopped:
+        if not self._stopped and not self._polling:
             self._schedule(self.interval)
 
     @callback
     def async_request_poll(self, delay: float) -> None:
-        """Poll ``delay`` seconds from now, unless one is already due sooner."""
+        """Poll ``delay`` seconds from now, unless one is already due sooner.
+        A request made while a poll is under way is kept for when it ends."""
         if self._stopped:
             return
-        if self._due_in is None or delay < self._due_in:
+        due_at = self._clock() + delay
+        if self._polling:
+            if self._requested_at is None or due_at < self._requested_at:
+                self._requested_at = due_at
+            return
+        if self._due_at is None or due_at < self._due_at:
             self._schedule(delay)
 
     @property
@@ -118,21 +133,47 @@ class RestPoller:
             self._cancel()
             self._cancel = None
         self._due_in = None
+        self._due_at = None
 
     @callback
     def _schedule(self, delay: float) -> None:
         self._cancel_timer()
         self._due_in = delay
+        self._due_at = self._clock() + delay
         self._cancel = async_call_later(self.hass, delay, self._fire)
 
     @callback
     def _fire(self, _now: Any) -> None:
         self._cancel = None
         self._due_in = None
+        self._due_at = None
         self.hass.async_create_task(self.async_poll())
 
+    @callback
+    def _schedule_after_poll(self, delay: float) -> None:
+        """Schedule the next poll, keeping a sooner one requested meanwhile."""
+        if self._stopped:
+            return
+        if self._requested_at is not None:
+            delay = min(delay, max(0.0, self._requested_at - self._clock()))
+            self._requested_at = None
+        self._schedule(delay)
+
     async def async_poll(self) -> None:
-        """Poll once, apply the replies, and schedule the next poll."""
+        """Poll once, apply the replies, and schedule the next poll. Only one
+        poll runs at a time; a poll due while one is under way runs as soon
+        as it ends, so replies are never applied out of order."""
+        if self._polling:
+            self.async_request_poll(0)
+            return
+        self._polling = True
+        try:
+            await self._async_poll_once()
+        finally:
+            self._polling = False
+        self._schedule_after_poll(self._next_delay)
+
+    async def _async_poll_once(self) -> None:
         device_ids = list(self.coordinators)
         try:
             await self._ensure_token()
@@ -146,8 +187,7 @@ class RestPoller:
                 "REST status poll failed (%d in a row), next in %d s: %s",
                 self._failures, delay, self.last_error,
             )
-            if not self._stopped:
-                self._schedule(delay)
+            self._next_delay = delay
             if self.on_result is not None:
                 self.on_result(False)
             return
@@ -161,7 +201,6 @@ class RestPoller:
                 _LOGGER.debug("REST status for an unknown device: %s", raw.get("id"))
                 continue
             coordinator.apply_rest_status(raw, self.last_poll_at)
+        self._next_delay = self.interval
         if self.on_result is not None:
             self.on_result(True)
-        if not self._stopped:
-            self._schedule(self.interval)

@@ -1,4 +1,5 @@
 """Steady REST poll: one call for all mowers, backoff on failure."""
+import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -118,6 +119,69 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         self.api._async_request.side_effect = None
         await self.poller.async_poll()
         self.assertIsNone(self.poller.last_error_at)
+
+
+class SchedulingTest(unittest.IsolatedAsyncioTestCase):
+    """Deadlines are absolute, and a request made during a poll survives it."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.hass = HomeAssistant(self.temp.name)
+        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.gate = asyncio.Event()
+        self.gate.set()
+        self.calls = 0
+
+        async def request(*args, **kwargs):
+            self.calls += 1
+            await self.gate.wait()
+            return reply(DOCKED)
+
+        self.api = SimpleNamespace(_async_request=request)
+        self.coordinators = {"dev-1": SimpleNamespace(apply_rest_status=Mock())}
+        self.poller = RestPoller(self.hass, self.api, self.coordinators, 120, AsyncMock())
+        self.now = 1000.0
+        self.poller._clock = lambda: self.now
+        self.poller.async_start()
+        self.addCleanup(self.poller.async_stop)
+        await self.poller.async_poll()  # next poll due at 1120
+
+    async def test_request_keeps_a_poll_that_is_due_sooner(self):
+        self.now = 1119.0  # the regular poll is one second away
+        self.poller.async_request_poll(5)
+        self.assertEqual(self.poller._due_at, 1120.0)
+        self.poller.async_request_poll(0.5)
+        self.assertEqual(self.poller._due_at, 1119.5)
+
+    async def test_request_during_a_poll_survives_its_end(self):
+        self.gate.clear()
+        poll = asyncio.create_task(self.poller.async_poll())
+        await asyncio.sleep(0)
+        self.poller.async_request_poll(5)  # a command while the request is out
+        self.now += 2
+        self.gate.set()
+        await poll
+        self.assertEqual(self.poller.next_delay, 3.0)  # not the full interval
+
+    async def test_overlapping_poll_waits_for_the_one_under_way(self):
+        self.gate.clear()
+        first = asyncio.create_task(self.poller.async_poll())
+        await asyncio.sleep(0)
+        await self.poller.async_poll()  # a timer firing meanwhile
+        self.assertEqual(self.calls, 2)  # the setUp poll and the first only
+        self.gate.set()
+        await first
+        self.assertEqual(self.poller.next_delay, 0.0)  # runs right after
+
+    async def test_interval_change_during_a_poll_applies_at_its_end(self):
+        self.gate.clear()
+        poll = asyncio.create_task(self.poller.async_poll())
+        await asyncio.sleep(0)
+        self.poller.async_set_interval(300)
+        self.gate.set()
+        await poll
+        self.assertEqual(self.poller.next_delay, 300)
 
 
 class FetchTest(unittest.IsolatedAsyncioTestCase):
