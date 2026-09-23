@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from mower_sdk.models import DeviceStateMessage, DeviceStatus
 
 from custom_components.navimow.coordinator import NavimowCoordinator
-from custom_components.navimow.location import parse_location_payload
+from custom_components.navimow.location import parse_location_message, parse_location_payload
 
 from tests.test_location import POSE, RECEIVED
 
@@ -198,3 +198,16 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         live = parse_location_payload(cache, "dev-1", [POSE], received_at=RECEIVED)
         self.coordinator.ingest_location(live)
         self.assertEqual(self.coordinator.get_dock_position()["n"], 1)
+
+    async def test_each_snapshot_of_a_message_is_published(self):
+        published = []
+        self.coordinator.async_add_listener(
+            lambda: published.append(self.coordinator.get_device_location()["x"])
+        )
+        poses = [
+            {**POSE, "postureX": f"{i}.000", "time": 1700000000000 + 2000 * i}
+            for i in range(1, 5)
+        ]
+        for snap in parse_location_message({}, "dev-1", poses, received_at=RECEIVED):
+            self.coordinator.ingest_location(snap)
+        self.assertEqual(published, [1.0, 2.0, 3.0, 4.0])

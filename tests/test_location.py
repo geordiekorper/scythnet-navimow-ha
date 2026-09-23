@@ -3,6 +3,7 @@ import unittest
 
 from custom_components.navimow.location import (
     TASK_ATTRIBUTES,
+    parse_location_message,
     parse_location_payload,
     progress_percent,
     restore_location_groups,
@@ -213,6 +214,53 @@ class PoseTest(unittest.TestCase):
         self.parse(POSE)
         loc = self.parse({**POSE, "postureY": "0.500"})
         self.assertEqual((loc["x"], loc["y"]), (1.5, 0.5))
+
+
+class MessageSnapshotsTest(unittest.TestCase):
+    """A message yields one snapshot per entry that changed the record."""
+
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries):
+        return parse_location_message(self.cache, "dev-1", list(entries), received_at=RECEIVED)
+
+    def test_each_pose_of_a_batch_is_its_own_snapshot(self):
+        poses = [
+            {**POSE, "postureX": f"{i}.000", "time": 1700000000000 + 2000 * i}
+            for i in range(1, 5)
+        ]
+        snaps = self.parse(*poses)
+        self.assertEqual([s["x"] for s in snaps], [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(
+            [s["pose_time"] for s in snaps],
+            [1700000002000, 1700000004000, 1700000006000, 1700000008000],
+        )
+        self.assertEqual(self.cache["dev-1"]["x"], 4.0)
+
+    def test_snapshots_are_independent_copies(self):
+        first, second = self.parse(POSE, {**POSE, "postureX": "9.000", "time": 1700000002000})
+        self.assertEqual(first["x"], 1.5)
+        self.assertEqual(second["x"], 9.0)
+
+    def test_pose_and_task_give_two_snapshots(self):
+        pose_snap, task_snap = self.parse(POSE, FULL_TASK)
+        self.assertNotIn("task", pose_snap)
+        self.assertEqual(task_snap["task"]["route_progress"], 5000)
+        self.assertEqual(task_snap["x"], 1.5)
+
+    def test_entries_that_change_nothing_give_no_snapshot(self):
+        snaps = self.parse(
+            {**POSE, "postureX": None},
+            {"time": 1700000060000, "type": 4, "vehicleState": 1},
+            POSE,
+        )
+        self.assertEqual(len(snaps), 1)
+
+    def test_nothing_usable_gives_no_snapshots_and_no_cache(self):
+        self.assertEqual(self.parse(), [])
+        self.assertEqual(parse_location_message(self.cache, "dev-1", {"type": 1}), [])
+        self.assertNotIn("dev-1", self.cache)
 
 
 class RestoreTest(unittest.TestCase):

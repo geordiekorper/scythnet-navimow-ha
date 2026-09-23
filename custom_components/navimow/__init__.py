@@ -30,7 +30,7 @@ from .const import (
 )
 from .coordinator import NavimowCoordinator
 from .services import async_setup_services, async_unload_services
-from .location import location_topic, parse_location_payload
+from .location import location_topic, parse_location_message
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.debug("Navimow module imported (__init__.py)")
@@ -244,11 +244,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         _data = json.loads(payload_text)
                     except (ValueError, TypeError):
                         _data = None
-                    _loc = parse_location_payload(
+                    # One snapshot per entry, published in order, so every
+                    # pose of a multi-pose message reaches the recorder.
+                    _coord = _location_coordinators.get(device_id)
+                    for _loc in parse_location_message(
                         _location_cache, device_id, _data, received_at=received_at
-                    )
-                    if _loc is not None:
-                        _coord = _location_coordinators.get(device_id)
+                    ):
                         if _coord is not None:
                             hass.loop.call_soon_threadsafe(_coord.ingest_location, _loc)
                     return

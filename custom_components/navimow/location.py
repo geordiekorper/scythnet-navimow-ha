@@ -231,33 +231,36 @@ def progress_percent(loc: dict | None) -> tuple[float | None, str]:
     return None, "none"
 
 
-def parse_location_payload(
+def parse_location_message(
     cache: dict[str, dict],
     device_id: str,
     data: Any,
     received_at: str | None = None,
-) -> dict | None:
-    """Merge one location message into the per-device cache.
+) -> list[dict]:
+    """Merge one location message into the per-device cache, entry by entry.
 
     Fields persist across messages (a pose update keeps the last-known zone).
     ``received_at`` is HA's receipt time for this message (UTC ISO 8601); it
-    is stored with the pose the message carried. Returns the updated record,
-    or None if nothing relevant changed.
+    is stored with the pose the message carried. Returns one snapshot of the
+    record after each entry that changed it, in message order, so a message
+    carrying several poses or task entries publishes each of them; empty when
+    nothing relevant changed.
     """
     if not isinstance(data, list):
-        return None
+        return []
     loc = dict(cache.get(device_id) or {})
     loc["device_id"] = device_id
-    changed = False
+    snapshots: list[dict] = []
     for item in data:
         if not isinstance(item, dict):
             continue
+        changed = False
         t = item.get("type")
         if t == 1:
             pose = parse_pose_entry(item)
             if pose is None:
                 continue  # unusable X/Y: the previous pose stays untouched
-            loc.update(pose)  # replaced whole; the last valid entry wins
+            loc.update(pose)  # replaced whole, never mixed with an older pose
             loc["received_at"] = received_at
             loc.pop("pose_restored", None)
             changed = True
@@ -291,7 +294,19 @@ def parse_location_payload(
                 loc["task_delay"] = item.get("taskDelay")
                 loc.pop("delay_restored", None)
                 changed = True
-    if not changed:
-        return None
-    cache[device_id] = loc
-    return loc
+        if changed:
+            snapshots.append(dict(loc))
+    if snapshots:
+        cache[device_id] = loc
+    return snapshots
+
+
+def parse_location_payload(
+    cache: dict[str, dict],
+    device_id: str,
+    data: Any,
+    received_at: str | None = None,
+) -> dict | None:
+    """The record after the whole message, or None if nothing relevant changed."""
+    snapshots = parse_location_message(cache, device_id, data, received_at)
+    return snapshots[-1] if snapshots else None
