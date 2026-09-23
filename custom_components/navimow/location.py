@@ -255,6 +255,18 @@ def is_placeholder_pose(pose: dict[str, Any]) -> bool:
     return pose["x"] == 0 and pose["y"] == 0 and not pose["theta"]
 
 
+# Every field and entry type the decoder knows (as in Scythnet). An entry with
+# another field still applies what it knows and the message is recorded as
+# rejected input, so a field the mower starts sending is never lost; an entry
+# of another type applies nothing.
+KNOWN_FIELDS = frozenset({
+    "type", "time", "postureX", "postureY", "postureTheta", "vehicleState",
+    "currentMowBoundary", "currentMowProgress", "mowingPercentage",
+    "subtotalArea", "mowingWeekArea", "partitionIds", "taskDelay", "action",
+    "subAction", "mowStartType", "mapWorkPosition",
+})
+ENTRY_TYPES = frozenset({1, 2, 3, 4})
+
 # When a message earns several rejection reasons, the one recorded as
 # `reason` is the first of these present (all are listed in `reasons`).
 REASON_PRIORITY = (
@@ -314,6 +326,11 @@ def parse_location_message(
             continue
         changed = False
         t = item.get("type")
+        if not set(item) <= KNOWN_FIELDS:
+            result.reject("unknown_field")
+        if t not in ENTRY_TYPES:
+            result.reject("unknown_type")
+            continue
         if t == 4 and "taskDelay" not in item:
             # The reconnect-time shape {"time", "type": 4, "vehicleState"}
             # carries no delay; the pose already carries the state.

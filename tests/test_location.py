@@ -514,3 +514,40 @@ class PlausibilityAndPlaceholderTest(unittest.TestCase):
         )
         self.assertEqual(result.reasons, ["placeholder", "implausible_time"])
         self.assertEqual(result.reason, "implausible_time")
+
+
+class UnknownInputTest(unittest.TestCase):
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries):
+        return parse_location_message(self.cache, "dev-1", list(entries), received_at=RECEIVED)
+
+    def test_unknown_field_still_applies_the_known_ones(self):
+        result = self.parse({**POSE, "postureZ": "0.1"})
+        self.assertEqual(result.snapshots[0]["x"], 1.5)
+        self.assertEqual(result.reasons, ["unknown_field"])
+
+    def test_unknown_type_applies_nothing(self):
+        result = self.parse({"type": 7, "time": 1700000000000, "foo": 1})
+        self.assertEqual(result.snapshots, [])
+        self.assertEqual(result.reasons, ["unknown_field", "unknown_type"])
+        self.assertEqual(result.reason, "unknown_type")
+
+    def test_missing_or_odd_type_is_unknown(self):
+        self.assertEqual(self.parse({"time": 1700000000000}).reasons, ["unknown_type"])
+        self.assertEqual(self.parse({"type": "1", **{k: v for k, v in POSE.items() if k != "type"}}).reason,
+                         "unknown_type")
+
+    def test_every_field_of_the_known_shapes_is_known(self):
+        result = self.parse(
+            POSE, FULL_TASK, {**FULL_TASK, "subAction": 6, "time": 1700000000033},
+            {"type": 3, "partitionIds": [2], "time": 1700000000010},
+            {"type": 4, "taskDelay": True},
+            {"time": 1700000060000, "type": 4, "vehicleState": 1},
+        )
+        self.assertEqual(result.reasons, [])
+
+    def test_reconnect_shape_with_an_unknown_field_is_recorded(self):
+        result = self.parse({"time": 1700000060000, "type": 4, "vehicleState": 1, "new": 1})
+        self.assertEqual((result.snapshots, result.reasons), ([], ["unknown_field"]))
