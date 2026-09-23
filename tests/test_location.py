@@ -6,6 +6,7 @@ from custom_components.navimow.location import (
     parse_location_message,
     parse_location_payload,
     progress_percent,
+    strip_sdk_envelope,
     restore_location_groups,
     target_zone,
 )
@@ -660,3 +661,16 @@ class UnparsableLocationTest(unittest.TestCase):
 
     def parse_raw(self, data):
         return parse_location_message(self.cache, "dev-1", data, received_at=RECEIVED)
+
+    def test_sdk_added_device_id_is_not_an_unknown_field(self):
+        wrapped = {**POSE, "device_id": "dev-1"}  # as the SDK forwards it
+        result = self.parse_raw(strip_sdk_envelope(wrapped, "dev-1"))
+        self.assertEqual(result.reasons, [])
+        self.assertEqual(result.snapshots[0]["x"], 1.5)
+
+    def test_envelope_stripping_leaves_other_payloads_alone(self):
+        batch = [{**POSE, "device_id": "dev-1"}]
+        self.assertIs(strip_sdk_envelope(batch, "dev-1"), batch)
+        other = {**POSE, "device_id": "someone-else"}
+        self.assertEqual(strip_sdk_envelope(other, "dev-1"), other)
+        self.assertIsNone(strip_sdk_envelope(None, "dev-1"))

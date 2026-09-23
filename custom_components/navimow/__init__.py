@@ -33,7 +33,7 @@ from .const import (
 )
 from .coordinator import NavimowCoordinator
 from .services import async_setup_services, async_unload_services
-from .location import location_topic, parse_location_message
+from .location import location_topic, parse_location_message, strip_sdk_envelope
 from .rejected import raw_message_rejection
 from .health import CollectorHealth, instrument_mqtt
 from .rest_poll import RestPoller
@@ -187,7 +187,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         def _process_location(topic: str, payload_text: str, device_id: str, received_at: str) -> None:
             try:
-                _data = json.loads(payload_text)
+                _data = strip_sdk_envelope(json.loads(payload_text), device_id)
             except (ValueError, TypeError):
                 _data = None
             # One snapshot per entry, published in order, so every

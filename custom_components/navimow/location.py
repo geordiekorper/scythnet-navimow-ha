@@ -339,6 +339,18 @@ def _zone_set(pids: Any) -> frozenset:
     return frozenset(pids) if isinstance(pids, list) else frozenset()
 
 
+def strip_sdk_envelope(data: Any, device_id: str) -> Any:
+    """The location payload as the mower sent it.
+
+    The SDK adds ``device_id`` to a payload that is a JSON object before the
+    integration sees it (an array it leaves alone); left in, it would read as
+    a vendor field nobody knows.
+    """
+    if isinstance(data, dict) and data.get("device_id") == device_id:
+        return {k: v for k, v in data.items() if k != "device_id"}
+    return data
+
+
 def parse_location_message(
     cache: dict[str, dict],
     device_id: str,
