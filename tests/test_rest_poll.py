@@ -80,7 +80,11 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         self.api._async_request.assert_not_awaited()
         self.assertEqual(self.poller.next_delay, 240)
 
+    async def test_first_poll_comes_soon_after_start(self):
+        self.assertEqual(self.poller.next_delay, 5)
+
     async def test_requested_poll_only_moves_sooner(self):
+        await self.poller.async_poll()  # now due in a full interval
         self.poller.async_request_poll(5)
         self.assertEqual(self.poller.next_delay, 5)
         self.poller.async_request_poll(60)

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 STATUS_ENDPOINT = "/openapi/smarthome/getVehicleStatus"
+FIRST_POLL_DELAY = 5
 
 
 async def async_fetch_statuses(api: MowerAPI, device_ids: list[str]) -> list[dict[str, Any]]:
@@ -78,10 +79,11 @@ class RestPoller:
 
     @callback
     def async_start(self) -> None:
-        """Start polling; the first poll runs one interval from now (setup
-        already fetched a status for every mower)."""
+        """Start polling. The first poll runs FIRST_POLL_DELAY seconds from
+        now: setup's own status fetch goes through the SDK's model, so until
+        this poll the rest_status sensor has no reply as sent to show."""
         self._stopped = False
-        self._schedule(self.interval)
+        self._schedule(FIRST_POLL_DELAY)
 
     @callback
     def async_stop(self) -> None:
