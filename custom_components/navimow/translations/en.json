@@ -57,6 +57,16 @@
     "stop": {
       "name": "Stop mowing",
       "description": "Pause the task using the Navimow stop command; this does not cancel or delete it."
+    },
+    "command": {
+      "name": "Send command",
+      "description": "Send any command to the mower and return the cloud's verdict as response data (accepted, already_in_state, unknown or unconfirmed).",
+      "fields": {
+        "command": {
+          "name": "Command",
+          "description": "start, pause, resume, stop or dock."
+        }
+      }
     }
   }
 }

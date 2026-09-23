@@ -25,6 +25,7 @@ class FakeMower(LawnMowerEntity):
     _attr_should_poll = False
     async_resume = NavimowLawnMower.async_resume
     async_stop = NavimowLawnMower.async_stop
+    async_navimow_command = NavimowLawnMower.async_navimow_command
 
     def __init__(self, hass, entity_id, vendor_id):
         super().__init__()
@@ -90,6 +91,37 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome["command"], "stop")
         self.assertEqual(outcome["status"], "already_in_state")
 
+    async def test_command_action_sends_any_command_with_its_outcome(self):
+        for name, command in (("start", MowerCommand.START), ("pause", MowerCommand.PAUSE),
+                              ("dock", MowerCommand.DOCK), ("resume", MowerCommand.RESUME),
+                              ("stop", MowerCommand.STOP)):
+            self.first._api.async_send_command.return_value = {
+                "payload": {"commands": [{"status": "SUCCESS"}]}
+            }
+            response = await self.hass.services.async_call(
+                'navimow', 'command', {'command': name},
+                target={'entity_id': self.first.entity_id}, blocking=True, return_response=True,
+            )
+            self.first._api.async_send_command.assert_awaited_with('vendor-1', command)
+            self.assertEqual(response[self.first.entity_id]["status"], "accepted")
+            self.assertEqual(response[self.first.entity_id]["command"], name)
+
+    async def test_command_action_rejects_an_unknown_command(self):
+        import voluptuous as vol
+        with self.assertRaises(vol.Invalid):
+            await self.hass.services.async_call(
+                'navimow', 'command', {'command': 'mow_faster'},
+                target={'entity_id': self.first.entity_id}, blocking=True,
+            )
+        self.first._api.async_send_command.assert_not_awaited()
+
+    async def test_command_action_works_without_asking_for_a_response(self):
+        await self.hass.services.async_call(
+            'navimow', 'command', {'command': 'dock'},
+            target={'entity_id': self.first.entity_id}, blocking=True,
+        )
+        self.first._api.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.DOCK)
+
     async def test_each_entity_routes_to_its_own_mower(self):
         await self.call('resume', self.first.entity_id)
         await self.call('stop', self.second.entity_id)
@@ -124,8 +156,8 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         old = self.first
         self.hass.data['navimow'].clear()
         async_unload_services(self.hass)
-        self.assertFalse(self.hass.services.has_service('navimow', 'resume'))
-        self.assertFalse(self.hass.services.has_service('navimow', 'stop'))
+        for name in ('resume', 'stop', 'command'):
+            self.assertFalse(self.hass.services.has_service('navimow', name))
         await self.platform.async_remove_entity(old.entity_id)
         self.first = FakeMower(self.hass, old.entity_id, 'vendor-1')
         await self.platform.async_add_entities([self.first])
@@ -153,7 +185,7 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         self.hass.data['navimow']['other_entry'] = {}
         del self.hass.data['navimow']['entry']
         async_unload_services(self.hass)
-        for name in ('resume', 'stop', 'set_blade_height'):
+        for name in ('resume', 'stop', 'command', 'set_blade_height'):
             self.assertTrue(self.hass.services.has_service('navimow', name))
         await self.call('stop', self.second.entity_id)
         self.second._api.async_send_command.assert_awaited_once_with('vendor-2', MowerCommand.STOP)

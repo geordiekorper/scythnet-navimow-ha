@@ -32,3 +32,21 @@ stop:
     entity:
       domain: lawn_mower
       integration: navimow
+
+command:
+  target:
+    entity:
+      domain: lawn_mower
+      integration: navimow
+  fields:
+    command:
+      required: true
+      example: dock
+      selector:
+        select:
+          options:
+            - start
+            - pause
+            - resume
+            - stop
+            - dock

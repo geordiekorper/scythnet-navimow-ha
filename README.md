@@ -71,7 +71,7 @@ The [Scythnet fork](https://github.com/geordiekorper/scythnet-navimow-ha) adds
 explicit resume and stop actions with shared command handling and logging.
 Both actions ship in release 1.2.0; see [the changelog](CHANGELOG.md).
 
-All five controls are available in **Developer Tools → Actions**:
+All five controls, and `navimow.command` for any of them with a response, are available in **Developer Tools → Actions**:
 
 | Action | Purpose | Selection |
 | --- | --- | --- |
@@ -80,6 +80,7 @@ All five controls are available in **Developer Tools → Actions**:
 | `lawn_mower.dock` | Return to the dock | Mower entity |
 | `navimow.resume` | Explicitly resume the current task | Mower entity |
 | `navimow.stop` | Pause using the stop command; does not cancel or delete the task | Mower entity |
+| `navimow.command` | Any of the five by name, returning the cloud's verdict | Mower entity |
 
 Home Assistant's standard `lawn_mower` domain provides start, pause, and dock.
 Resume and stop are additional integration actions in the `navimow` domain.
@@ -121,7 +122,9 @@ as response data when asked for (`response_variable` in a script, or "Return
 response" in Developer Tools), keyed by entity id: `command`, `status`
 (`accepted`, `already_in_state`, `unknown` when the reply says neither, or
 `unconfirmed` when no reply came back at all, in which case the command may still
-act and no error is raised), `error`, `sent_at` and `recorded_at`. A command the
+act and no error is raised), `error`, `sent_at` and `recorded_at`. `navimow.command`
+sends any of them by name (`command: start|pause|resume|stop|dock`) with the same
+response, for the three commands HA's `lawn_mower` actions cannot return one for. A command the
 cloud refuses raises an error as before. Every command sent is followed by a REST
 status poll 5 s later. A subsequent refresh failure is logged without failing the submitted action.
 Authentication failures before submission start the integration's reauthentication flow.
