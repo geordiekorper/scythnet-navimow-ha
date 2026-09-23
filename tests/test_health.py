@@ -91,6 +91,14 @@ class InstrumentTest(unittest.IsolatedAsyncioTestCase):
         instrument_mqtt(FakeSdkMqtt(connected=True), asyncio.get_running_loop(), health)
         self.assertTrue(health.connected)
 
+    async def test_location_messages_and_connects_are_timed_for_the_watchdog(self):
+        self.health.note_message("dev-1", "state")
+        self.assertNotIn("dev-1", self.health.last_location_monotonic)
+        self.health.note_message("dev-1", "location")
+        self.assertIn("dev-1", self.health.last_location_monotonic)
+        self.health.note_connected("c")
+        self.assertIsNotNone(self.health.connected_monotonic)
+
     async def test_listeners_hear_every_change_until_removed(self):
         heard = []
         remove = self.health.async_add_listener(lambda: heard.append(self.health.connected))

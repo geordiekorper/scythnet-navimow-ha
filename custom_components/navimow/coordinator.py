@@ -252,8 +252,13 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         the last MQTT state report and its age, and REST's latest state."""
         mqtt, rest = self._mqtt_state, self._rest_status
         received = self._mqtt_received_monotonic
+        shown = self._last_state
         return {
             "name": self.device.name,
+            "shown_state": shown.state if shown else None,
+            # Has this mower ever reported a position (restored ones count):
+            # one whose location channel is silent altogether is not watched.
+            "has_pose": bool(self._last_location and self._last_location.get("pose_time")),
             "mqtt_state": mqtt.state if mqtt else None,
             "mqtt_key": self._mqtt_received_at,  # identifies the report
             "mqtt_age": None if received is None else now - received,

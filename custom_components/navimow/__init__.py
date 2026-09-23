@@ -247,7 +247,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     payload_text,
                 )
                 if device_id:
-                    health.note_message(device_id)
+                    health.note_message(device_id, topic.rsplit("/", 1)[-1])
                 if device_id and topic.endswith("/realtimeDate/location"):
                     received_at = dt_util.utcnow().isoformat()
                     try:
@@ -479,6 +479,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 watchdog.async_check_after_poll()
 
             rest_poller.on_result = _on_poll_result
+            watchdog.async_start()
+            entry.async_on_unload(watchdog.async_stop)
             for coordinator in coordinators.values():
                 coordinator.rest_poller = rest_poller
             rest_poller.async_start()

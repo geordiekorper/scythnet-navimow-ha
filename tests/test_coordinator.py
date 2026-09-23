@@ -323,6 +323,7 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         view = self.coordinator.get_watch_view(time.monotonic())
         self.assertEqual((view["mqtt_state"], view["rest_state"], view["mqtt_age"]), (None, None, None))
         self.coordinator._update_from_state(mqtt_message(), "2026-09-17T20:00:00+00:00")
+        self.mqtt_is_fresh()  # so REST is kept but not shown
         self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:02:00+00:00")
         view = self.coordinator.get_watch_view(time.monotonic() + 150)
         self.assertEqual(view["mqtt_state"], "mowing")
@@ -331,3 +332,9 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["rest_state"], "docked")
         self.assertEqual(view["rest_raw_state"], "isDocked")
         self.assertEqual(view["name"], "Mower")
+        self.assertEqual(view["shown_state"], "mowing")
+        self.assertFalse(view["has_pose"])
+        self.coordinator.ingest_location(
+            parse_location_payload({}, "dev-1", [POSE], received_at=RECEIVED)
+        )
+        self.assertTrue(self.coordinator.get_watch_view(time.monotonic())["has_pose"])

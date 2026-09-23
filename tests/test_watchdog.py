@@ -16,6 +16,7 @@ class FakeCoordinator:
         self.view = {
             "name": name, "mqtt_state": "mowing", "mqtt_key": "t1", "mqtt_age": 600.0,
             "rest_state": "docked", "rest_raw_state": "isDocked",
+            "shown_state": "mowing", "has_pose": True,
         }
 
     def get_watch_view(self, now):
@@ -101,3 +102,67 @@ class RestMismatchTest(WatchdogTestCase):
         reasons = await self.rebuilds()
         self.assertEqual(len(reasons), 2)
         self.assertIn("for Other", reasons[1])
+
+
+class LocationSilenceTest(WatchdogTestCase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.health.connected_monotonic = self.now - 1000
+        self.health.last_location_monotonic["dev-1"] = self.now - 10
+
+    async def test_silence_while_mowing_rebuilds(self):
+        self.watchdog.async_check_silence()
+        self.assertEqual(await self.rebuilds(), [])
+        self.now += 180
+        self.watchdog.async_check_silence()
+        reasons = await self.rebuilds()
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("no location message for 190 s while Mower runs", reasons[0])
+
+    async def test_rest_saying_it_runs_is_enough(self):
+        self.mower.view.update(shown_state="docked", rest_state="returning")
+        self.now += 600
+        self.watchdog.async_check_silence()
+        self.assertEqual(len(await self.rebuilds()), 1)
+
+    async def test_docked_mower_is_quiet_by_design(self):
+        self.mower.view.update(shown_state="docked", rest_state="docked")
+        self.now += 3600
+        self.watchdog.async_check_silence()
+        self.assertEqual(await self.rebuilds(), [])
+
+    async def test_mower_without_positions_is_not_watched(self):
+        self.mower.view["has_pose"] = False
+        self.now += 3600
+        self.watchdog.async_check_silence()
+        self.assertEqual(await self.rebuilds(), [])
+
+    async def test_disconnected_client_is_left_to_reconnect(self):
+        self.health.note_disconnected("lost")
+        self.now += 3600
+        self.watchdog.async_check_silence()
+        self.assertEqual(await self.rebuilds(), [])
+
+    async def test_silence_counts_from_the_connect(self):
+        del self.health.last_location_monotonic["dev-1"]
+        self.health.connected_monotonic = self.now - 100
+        self.watchdog.async_check_silence()
+        self.assertEqual(await self.rebuilds(), [])
+        self.now += 80
+        self.watchdog.async_check_silence()
+        self.assertEqual(len(await self.rebuilds()), 1)
+
+    async def test_both_rules_share_the_debounce(self):
+        self.watchdog.async_check_after_poll()  # rule 1 rebuilds
+        self.now += 200
+        self.watchdog.async_check_silence()  # silent, but inside 5 min
+        self.assertEqual(len(await self.rebuilds()), 1)
+        self.now += 100
+        self.watchdog.async_check_silence()
+        self.assertEqual(len(await self.rebuilds()), 2)
+
+    async def test_start_and_stop_the_periodic_check(self):
+        self.watchdog.async_start()
+        self.assertIsNotNone(self.watchdog._cancel_timer)
+        self.watchdog.async_stop()
+        self.assertIsNone(self.watchdog._cancel_timer)

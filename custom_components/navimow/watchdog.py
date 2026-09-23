@@ -10,6 +10,12 @@ detect that from the data itself:
    one MQTT could have echoed. MQTT missed a transition. Acted on once per
    MQTT report, so a mower that stays offline does not cause a rebuild on
    every poll.
+2. Every CHECK_SECONDS: a mower that is out sends a pose every two seconds,
+   so LOCATION_SILENCE seconds without a location message, from a mower
+   that has reported a position before, while it mows or returns (shown or
+   REST state) and the client says it is connected, means the broker has
+   stopped delivering. The state channel is too quiet to tell. A docked
+   mower is quiet by design and never triggers this.
 
 Rebuilds are debounced to one per WATCHDOG_DEBOUNCE, whichever rule asks.
 """
@@ -20,9 +26,12 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
+from datetime import timedelta
 
-from .const import REST_CACHE_LAG, WATCHDOG_DEBOUNCE
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.event import async_track_time_interval
+
+from .const import LOCATION_SILENCE, REST_CACHE_LAG, WATCHDOG_DEBOUNCE
 from .health import CollectorHealth
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,6 +40,9 @@ _LOGGER = logging.getLogger(__name__)
 # says nothing about MQTT: raw strings, and the SDK's catch-all.
 IGNORED_REST_RAW = frozenset({"Offline", "offline", "inSoftwareUpdate"})
 IGNORED_REST_STATES = frozenset({"unknown"})
+# States in which a mower that is out sends a pose every two seconds.
+MOVING_STATES = frozenset({"mowing", "returning"})
+CHECK_SECONDS = 30
 
 
 class MqttWatchdog:
@@ -53,6 +65,20 @@ class MqttWatchdog:
         self._last_rebuild: float | None = None
         # device id -> the MQTT report a rebuild was already made for
         self._acted_on: dict[str, Any] = {}
+        self._cancel_timer: CALLBACK_TYPE | None = None
+
+    @callback
+    def async_start(self) -> None:
+        """Start the periodic location-silence check (rule 2)."""
+        self._cancel_timer = async_track_time_interval(
+            self.hass, lambda _now: self.async_check_silence(), timedelta(seconds=CHECK_SECONDS)
+        )
+
+    @callback
+    def async_stop(self) -> None:
+        if self._cancel_timer is not None:
+            self._cancel_timer()
+            self._cancel_timer = None
 
     def _debounced(self, now: float) -> bool:
         return self._last_rebuild is not None and now - self._last_rebuild < WATCHDOG_DEBOUNCE
@@ -94,3 +120,25 @@ class MqttWatchdog:
         for device_id, key, _ in mismatches:
             self._acted_on[device_id] = key
         self._request_rebuild(now, f"missed a state change ({mismatches[0][2]})")
+
+    @callback
+    def async_check_silence(self) -> None:
+        """Rule 2: a connected client that delivers nothing while a mower runs."""
+        health = self.health
+        now = self._clock()
+        if not health.connected or health.connected_monotonic is None or self._debounced(now):
+            return  # not connected is the reconnect path's business
+        for device_id, coordinator in self.coordinators.items():
+            view = coordinator.get_watch_view(now)
+            if not view["has_pose"]:
+                continue
+            if view["shown_state"] not in MOVING_STATES and view["rest_state"] not in MOVING_STATES:
+                continue
+            # Nothing can have arrived before this client connected.
+            heard = max(health.connected_monotonic, health.last_location_monotonic.get(device_id, 0.0))
+            quiet_for = now - heard
+            if quiet_for >= LOCATION_SILENCE:
+                self._request_rebuild(
+                    now, f"no location message for {int(quiet_for)} s while {view['name']} runs"
+                )
+                return

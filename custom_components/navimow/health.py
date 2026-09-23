@@ -14,6 +14,7 @@ client, including every client the SDK builds later.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -33,8 +34,11 @@ class CollectorHealth:
         self.disconnect_reason: str | None = None
         self.connect_failed_at: str | None = None
         self.connect_fail_reason: str | None = None
-        # When the last MQTT message for each device arrived.
+        # When the last MQTT message for each device arrived, and (monotonic,
+        # for the watchdog) the last location message and the last connect.
         self.last_message_at: dict[str, datetime] = {}
+        self.last_location_monotonic: dict[str, float] = {}
+        self.connected_monotonic: float | None = None
         # Counters since start-up, and the latest of each kind of event.
         self.connects = 0
         self.disconnects = 0
@@ -75,8 +79,10 @@ class CollectorHealth:
         return remove
 
     @callback
-    def note_message(self, device_id: str) -> None:
+    def note_message(self, device_id: str, channel: str | None = None) -> None:
         self.last_message_at[device_id] = dt_util.utcnow()
+        if channel == "location":
+            self.last_location_monotonic[device_id] = time.monotonic()
         for update in list(self._message_listeners):
             update(device_id)
 
@@ -89,6 +95,7 @@ class CollectorHealth:
     def note_connected(self, client_id: str | None = None) -> None:
         self.connects += 1
         self.connected = True
+        self.connected_monotonic = time.monotonic()
         self.client_id = client_id or self.client_id
         self.connected_at = dt_util.utcnow().isoformat()
         self._notify()

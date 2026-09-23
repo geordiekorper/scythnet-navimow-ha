@@ -51,6 +51,9 @@ REST_POLL_MAX_BACKOFF: Final = 600
 # The cloud's REST status cache lags this long behind the mower (seconds); a
 # REST reading counts as newer than an MQTT report only past this age.
 REST_CACHE_LAG: Final = 120
+# A mower that is out sends a pose every 2 s; this long without a location
+# message while it mows or returns means the broker stopped delivering.
+LOCATION_SILENCE: Final = 180
 # The MQTT watchdog rebuilds the connection at most once per this long.
 WATCHDOG_DEBOUNCE: Final = 300
 
