@@ -126,7 +126,7 @@ class SensorAttributesTest(unittest.TestCase):
     def test_same_x_different_y_changes_the_attributes(self):
         self.feed(POSE)
         first = self.sensor("position_x").extra_state_attributes
-        self.feed({**POSE, "postureY": "0.500"})
+        self.feed({**POSE, "postureY": "0.500", "time": 1700000002000})
         second = self.sensor("position_x").extra_state_attributes
         self.assertNotEqual(first, second)
         self.assertEqual(second["y"], 0.5)
@@ -219,7 +219,7 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertEqual(sensor.native_value, "all")
         self.coordinator.state = SimpleNamespace(state="returning")
         self.assertEqual(sensor.native_value, "none")
-        self.feed({"partitionIds": [2], "time": 1700000000010, "type": 3})
+        self.feed({"partitionIds": [2], "time": 1700000300010, "type": 3})
         self.assertEqual(sensor.native_value, 2)
         self.assertEqual(sensor.extra_state_attributes["partition_ids"], [2])
 

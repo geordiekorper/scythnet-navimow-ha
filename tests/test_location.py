@@ -212,7 +212,7 @@ class PoseTest(unittest.TestCase):
 
     def test_same_x_different_y_is_a_new_pose(self):
         self.parse(POSE)
-        loc = self.parse({**POSE, "postureY": "0.500"})
+        loc = self.parse({**POSE, "postureY": "0.500", "time": 1700000002000})
         self.assertEqual((loc["x"], loc["y"]), (1.5, 0.5))
 
 
@@ -551,3 +551,77 @@ class UnknownInputTest(unittest.TestCase):
     def test_reconnect_shape_with_an_unknown_field_is_recorded(self):
         result = self.parse({"time": 1700000060000, "type": 4, "vehicleState": 1, "new": 1})
         self.assertEqual((result.snapshots, result.reasons), ([], ["unknown_field"]))
+
+
+class HighWaterTest(unittest.TestCase):
+    """Per-type ordering guard: an entry at or below the newest applied time
+    of its type is late or repeated, applies nothing and is recorded."""
+
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries):
+        return parse_location_message(self.cache, "dev-1", list(entries), received_at=RECEIVED)
+
+    def test_late_pose_does_not_move_the_position(self):
+        self.parse({**POSE, "postureX": "5.000", "time": 1700000010000})
+        result = self.parse(POSE)  # sent earlier, delivered later
+        self.assertEqual(result.snapshots, [])
+        self.assertEqual(result.reason, "stale")
+        self.assertEqual(self.cache["dev-1"]["x"], 5.0)
+
+    def test_repeated_delivery_is_stale(self):
+        self.parse(POSE)
+        self.assertEqual(self.parse(POSE).reason, "stale")
+
+    def test_reordering_inside_one_message(self):
+        result = self.parse(
+            {**POSE, "time": 1700000004000, "postureX": "4.000"},
+            {**POSE, "time": 1700000002000, "postureX": "2.000"},
+            {**POSE, "time": 1700000006000, "postureX": "6.000"},
+        )
+        self.assertEqual([s["x"] for s in result.snapshots], [4.0, 6.0])
+        self.assertEqual(result.reasons, ["stale"])
+
+    def test_each_type_has_its_own_mark(self):
+        self.parse({**FULL_TASK, "time": 1700000100000})
+        result = self.parse(POSE, {"type": 3, "partitionIds": [2], "time": 1700000000010})
+        self.assertEqual(len(result.snapshots), 2)
+        self.assertIsNone(result.reason)
+
+    def test_late_task_reading_keeps_the_newer_one(self):
+        self.parse({**FULL_TASK, "currentMowProgress": 6000, "time": 1700000100000})
+        result = self.parse(FULL_TASK)
+        self.assertEqual(result.reason, "stale")
+        self.assertEqual(self.cache["dev-1"]["task"]["route_progress"], 6000)
+        self.assertEqual(self.cache["dev-1"]["mow_progress"], 6000)
+
+    def test_late_target_is_stale_but_a_repeat_is_not(self):
+        self.parse({"type": 3, "partitionIds": [2], "time": 1700000060000})
+        self.assertEqual(self.parse({"type": 3, "partitionIds": [5], "time": 1700000000000}).reason, "stale")
+        self.assertEqual(self.cache["dev-1"]["partition_ids"], [2])
+        result = self.parse({"type": 3, "partitionIds": [2], "time": 1700000120000})
+        self.assertIsNone(result.reason)
+
+    def test_entries_without_a_time_are_not_guarded(self):
+        self.parse(POSE)
+        result = self.parse({k: v for k, v in POSE.items() if k != "time"} | {"postureX": "3.000"})
+        self.assertEqual(result.snapshots[0]["x"], 3.0)
+        self.assertEqual(self.parse({"type": 4, "taskDelay": True}).reasons, [])
+
+    def test_restored_state_seeds_the_marks(self):
+        # What restore_location_groups puts back after a restart.
+        self.cache["dev-1"] = {
+            "device_id": "dev-1", "x": 7.0, "y": 1.0, "pose_time": 1700000050000,
+            "pose_restored": True,
+            "task": {"task_time_ms": 1700000050000, "route_progress": 9000},
+            "task_restored": True,
+            "partition_ids": [2], "target_time_ms": 1700000050000,
+            "target_last_time_ms": 1700000050000, "target_restored": True,
+        }
+        result = self.parse(POSE, FULL_TASK, {"type": 3, "partitionIds": [4], "time": 1700000000010})
+        self.assertEqual(result.snapshots, [])
+        self.assertEqual(result.reasons, ["stale"])
+        self.assertEqual(self.cache["dev-1"]["x"], 7.0)
+        newer = self.parse({**POSE, "time": 1700000060000})
+        self.assertEqual(newer.snapshots[0]["x"], 1.5)

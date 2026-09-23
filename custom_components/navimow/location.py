@@ -293,6 +293,23 @@ class ParsedLocation:
         return next((r for r in REASON_PRIORITY if r in self.reasons), None)
 
 
+def newest_time(loc: dict[str, Any], entry_type: Any) -> int | None:
+    """Mower time of the newest applied entry of ``entry_type``, or None.
+
+    This is the per-type high-water mark: messages arrive late and out of
+    order, and an entry at or below it is not applied. It is read from the
+    record itself, so the restored sensor states seed it after a restart.
+    Type 4 carries no time and is never guarded.
+    """
+    if entry_type == 1:
+        return _int(loc.get("pose_time"))
+    if entry_type == 2:
+        return _int((loc.get("task") or {}).get("task_time_ms"))
+    if entry_type == 3:
+        return _int(loc.get("target_last_time_ms"))
+    return None
+
+
 def _zone_set(pids: Any) -> frozenset:
     """A target report's zones as a set: the vendor's list order means nothing."""
     return frozenset(pids) if isinstance(pids, list) else frozenset()
@@ -336,8 +353,15 @@ def parse_location_message(
             # carries no delay; the pose already carries the state.
             continue
         entry_time = _int(item.get("time"))
-        if entry_time is not None and entry_time > 0 and not plausible_time(entry_time, now_ms):
+        if entry_time is not None and entry_time <= 0:
+            entry_time = None  # not a usable time
+        if entry_time is not None and not plausible_time(entry_time, now_ms):
             result.reject("implausible_time")
+            continue
+        newest = newest_time(loc, t)
+        if entry_time is not None and newest is not None and entry_time <= newest:
+            # Late or repeated delivery: history, not news.
+            result.reject("stale")
             continue
         if t == 1:
             pose = parse_pose_entry(item)
