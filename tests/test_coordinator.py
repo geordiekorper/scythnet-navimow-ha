@@ -208,7 +208,7 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
             {**POSE, "postureX": f"{i}.000", "time": 1700000000000 + 2000 * i}
             for i in range(1, 5)
         ]
-        for snap in parse_location_message({}, "dev-1", poses, received_at=RECEIVED):
+        for snap in parse_location_message({}, "dev-1", poses, received_at=RECEIVED).snapshots:
             self.coordinator.ingest_location(snap)
         self.assertEqual(published, [1.0, 2.0, 3.0, 4.0])
 

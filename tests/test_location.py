@@ -84,11 +84,11 @@ class TaskGroupTest(unittest.TestCase):
 
     def test_last_task_entry_in_a_batch_wins(self):
         loc = self.parse(
-            {"type": 2, "subtotalArea": "1.00", "time": 1},
-            {"type": 2, "subtotalArea": "2.00", "time": 2},
+            {"type": 2, "subtotalArea": "1.00", "time": 1700000000001},
+            {"type": 2, "subtotalArea": "2.00", "time": 1700000000002},
         )
         self.assertEqual(loc["task"]["area_m2"], 2.0)
-        self.assertEqual(loc["task"]["task_time_ms"], 2)
+        self.assertEqual(loc["task"]["task_time_ms"], 1700000000002)
 
     def test_invalid_values_become_none(self):
         loc = self.parse({
@@ -223,7 +223,7 @@ class MessageSnapshotsTest(unittest.TestCase):
         self.cache = {}
 
     def parse(self, *entries):
-        return parse_location_message(self.cache, "dev-1", list(entries), received_at=RECEIVED)
+        return parse_location_message(self.cache, "dev-1", list(entries), received_at=RECEIVED).snapshots
 
     def test_each_pose_of_a_batch_is_its_own_snapshot(self):
         poses = [
@@ -259,7 +259,7 @@ class MessageSnapshotsTest(unittest.TestCase):
 
     def test_nothing_usable_gives_no_snapshots_and_no_cache(self):
         self.assertEqual(self.parse(), [])
-        self.assertEqual(parse_location_message(self.cache, "dev-1", {"type": 1}), [])
+        self.assertEqual(parse_location_message(self.cache, "dev-1", {"type": 1}).snapshots, [])
         self.assertNotIn("dev-1", self.cache)
 
 
@@ -350,7 +350,7 @@ class RestoreTest(unittest.TestCase):
         loc = parse(FULL_TASK)
         self.assertNotIn("task_restored", loc)
         self.assertNotIn("progress_restored", loc)
-        loc = parse({"type": 3, "partitionIds": [2], "time": 1})
+        loc = parse({"type": 3, "partitionIds": [2], "time": 1700000000010})
         self.assertNotIn("target_restored", loc)
 
     def test_status_only_delay_keeps_the_restored_marker(self):
@@ -371,7 +371,7 @@ class TargetZoneTest(unittest.TestCase):
         self.assertIsNone(target_zone(self.parse(POSE), "mowing"))
 
     def test_named_target_is_the_first_id(self):
-        loc = self.parse({"partitionIds": [7, 19], "time": 1, "type": 3})
+        loc = self.parse({"partitionIds": [7, 19], "time": 1700000000010, "type": 3})
         self.assertEqual(target_zone(loc, "mowing"), 7)
         self.assertEqual(target_zone(loc, "docked"), 7)
 
@@ -387,7 +387,7 @@ class TargetZoneTest(unittest.TestCase):
             self.assertEqual(target_zone(loc, activity), "none", activity)
 
     def test_empty_list_counts_as_no_target(self):
-        loc = self.parse({"partitionIds": [], "time": 1, "type": 3})
+        loc = self.parse({"partitionIds": [], "time": 1700000000010, "type": 3})
         self.assertEqual(target_zone(loc, "docked"), "none")
 
     def test_dock_command_clears_a_named_target(self):
@@ -443,3 +443,74 @@ class TargetAndDelayTimesTest(unittest.TestCase):
         loc = self.parse({"time": 1, "type": 4, "vehicleState": 1}, POSE,
                          received_at="2026-09-17T22:00:00+00:00")
         self.assertEqual(loc["delay_received_at"], "2026-09-17T21:00:00+00:00")
+
+
+class PlausibilityAndPlaceholderTest(unittest.TestCase):
+    NOW_MS = 1700000100000
+
+    def setUp(self):
+        self.cache = {}
+
+    def parse(self, *entries):
+        return parse_location_message(
+            self.cache, "dev-1", list(entries), received_at=RECEIVED, now_ms=self.NOW_MS
+        )
+
+    def test_target_stamped_1970_is_rejected_and_changes_nothing(self):
+        self.parse({"type": 3, "partitionIds": [2], "time": 1700000000010})
+        result = self.parse({"type": 3, "partitionIds": [5], "time": 12345})
+        self.assertEqual(result.snapshots, [])
+        self.assertEqual(result.reason, "implausible_time")
+        self.assertEqual(self.cache["dev-1"]["partition_ids"], [2])
+
+    def test_pose_from_the_future_is_rejected(self):
+        future = {**POSE, "time": self.NOW_MS + 5 * 60 * 1000 + 1}
+        result = self.parse(future)
+        self.assertEqual(result.snapshots, [])
+        self.assertEqual(result.reasons, ["implausible_time"])
+
+    def test_edges_of_the_window_are_accepted(self):
+        result = self.parse(
+            {**POSE, "time": 1577836800000},
+            {**POSE, "postureX": "2.000", "time": self.NOW_MS + 5 * 60 * 1000},
+        )
+        self.assertEqual(len(result.snapshots), 2)
+        self.assertIsNone(result.reason)
+
+    def test_entry_without_a_time_is_not_judged(self):
+        result = self.parse({"type": 3, "partitionIds": [2]}, {"type": 4, "taskDelay": True})
+        self.assertEqual(len(result.snapshots), 2)
+        self.assertIsNone(result.reason)
+
+    def test_all_zero_pose_is_a_placeholder(self):
+        self.parse(POSE)
+        result = self.parse({**POSE, "postureX": "0.000", "postureY": "0.000",
+                             "postureTheta": "0.000", "time": 1700000002000})
+        self.assertEqual(result.snapshots, [])
+        self.assertEqual(result.reason, "placeholder")
+        self.assertEqual(self.cache["dev-1"]["x"], 1.5)
+
+    def test_zero_position_with_a_heading_is_a_real_pose(self):
+        result = self.parse({**POSE, "postureX": "0", "postureY": "0", "postureTheta": "1.2"})
+        self.assertEqual(result.snapshots[0]["x"], 0.0)
+        self.assertIsNone(result.reason)
+
+    def test_unusable_xy_is_unparsable(self):
+        self.assertEqual(self.parse({**POSE, "postureX": "n/a"}).reason, "unparsable")
+
+    def test_good_entries_of_a_mixed_message_still_apply(self):
+        result = self.parse({"type": 3, "partitionIds": [9], "time": 1}, POSE)
+        self.assertEqual([s["x"] for s in result.snapshots], [1.5])
+        self.assertEqual(result.reason, "implausible_time")
+
+    def test_reconnect_shape_is_neither_applied_nor_rejected(self):
+        result = self.parse({"time": 1, "type": 4, "vehicleState": 1})
+        self.assertEqual((result.snapshots, result.reasons), ([], []))
+
+    def test_deciding_reason_follows_the_priority(self):
+        result = self.parse(
+            {**POSE, "postureX": "0", "postureY": "0", "postureTheta": "0"},
+            {"type": 3, "partitionIds": [9], "time": 1},
+        )
+        self.assertEqual(result.reasons, ["placeholder", "implausible_time"])
+        self.assertEqual(result.reason, "implausible_time")

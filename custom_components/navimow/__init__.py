@@ -247,11 +247,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     # One snapshot per entry, published in order, so every
                     # pose of a multi-pose message reaches the recorder.
                     _coord = _location_coordinators.get(device_id)
-                    for _loc in parse_location_message(
+                    _parsed = parse_location_message(
                         _location_cache, device_id, _data, received_at=received_at
-                    ):
-                        if _coord is not None:
+                    )
+                    if _coord is not None:
+                        for _loc in _parsed.snapshots:
                             hass.loop.call_soon_threadsafe(_coord.ingest_location, _loc)
+                        if _parsed.reason is not None:
+                            # The whole message, once, with every reason.
+                            hass.loop.call_soon_threadsafe(
+                                _coord.record_rejected, "location", topic,
+                                _parsed.reason, payload_text, list(_parsed.reasons),
+                            )
                     return
                 if original_on_message is not None:
                     await original_on_message(topic, payload, device_id)
