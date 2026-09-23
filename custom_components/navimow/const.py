@@ -45,6 +45,8 @@ UPDATE_INTERVAL: Final = 30
 # set, and the longest wait after repeated failures (seconds).
 REST_POLL_SECONDS: Final = 120
 REST_POLL_MIN_SECONDS: Final = 30
+REST_POLL_MAX_SECONDS: Final = 600  # the most the option allows
+CONF_REST_POLL_SECONDS: Final = "rest_poll_seconds"  # entry option
 REST_POLL_MAX_BACKOFF: Final = 600
 # An extra REST poll this long after each command, to see its effect.
 COMMAND_POLL_DELAY: Final = 5

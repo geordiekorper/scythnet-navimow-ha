@@ -28,7 +28,13 @@
     "step": {
       "init": {
         "title": "Navimow 选项",
-        "description": "配置 Navimow 集成选项"
+        "description": "配置 Navimow 集成选项",
+        "data": {
+          "rest_poll_seconds": "REST 状态轮询间隔（秒）"
+        },
+        "data_description": {
+          "rest_poll_seconds": "Navimow 云端状态查询的间隔，30–600 秒。"
+        }
       }
     }
   }

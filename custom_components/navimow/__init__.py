@@ -28,6 +28,7 @@ from .const import (
     MQTT_PASSWORD,
     MQTT_KEEPALIVE,
     REST_POLL_SECONDS,
+    CONF_REST_POLL_SECONDS,
 )
 from .coordinator import NavimowCoordinator
 from .services import async_setup_services, async_unload_services
@@ -410,12 +411,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if coordinators:
             first = next(iter(coordinators.values()))
             rest_poller = RestPoller(
-                hass, api, coordinators, REST_POLL_SECONDS, first._async_ensure_valid_token
+                hass, api, coordinators,
+                entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS),
+                first._async_ensure_valid_token,
             )
             for coordinator in coordinators.values():
                 coordinator.rest_poller = rest_poller
             rest_poller.async_start()
             entry.async_on_unload(rest_poller.async_stop)
+            entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
         # 存储数据
         hass.data[DOMAIN][entry.entry_id] = {
@@ -439,6 +443,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:
         _LOGGER.exception("Error setting up Navimow integration: %s", err)
         raise ConfigEntryNotReady(f"Error setting up integration: {err}") from err
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply a changed poll interval to the running poller, without a reload."""
+    poller = (hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}).get("rest_poller")
+    if poller is not None:
+        poller.async_set_interval(entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

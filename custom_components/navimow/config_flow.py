@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
@@ -18,6 +19,10 @@ from .const import (
     MQTT_PORT,
     MQTT_USERNAME,
     MQTT_PASSWORD,
+    CONF_REST_POLL_SECONDS,
+    REST_POLL_MAX_SECONDS,
+    REST_POLL_MIN_SECONDS,
+    REST_POLL_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -167,7 +172,12 @@ class NavimowOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        current = self._config_entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS)
         return self.async_show_form(
             step_id="init",
-            data_schema=None,
+            data_schema=vol.Schema({
+                vol.Optional(CONF_REST_POLL_SECONDS, default=current): vol.All(
+                    vol.Coerce(int), vol.Range(min=REST_POLL_MIN_SECONDS, max=REST_POLL_MAX_SECONDS)
+                ),
+            }),
         )

@@ -32,7 +32,13 @@
     "step": {
       "init": {
         "title": "Navimow Options",
-        "description": "Configure Navimow integration options"
+        "description": "Configure Navimow integration options",
+        "data": {
+          "rest_poll_seconds": "REST status poll interval (seconds)"
+        },
+        "data_description": {
+          "rest_poll_seconds": "How often the Navimow cloud's status endpoint is polled for all mowers, 30–600 s. Default 120."
+        }
       }
     }
   },

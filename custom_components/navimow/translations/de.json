@@ -32,7 +32,13 @@
     "step": {
       "init": {
         "title": "Navimow Optionen",
-        "description": "Optionen der Navimow-Integration konfigurieren."
+        "description": "Optionen der Navimow-Integration konfigurieren.",
+        "data": {
+          "rest_poll_seconds": "REST-Statusabfrage-Intervall (Sekunden)"
+        },
+        "data_description": {
+          "rest_poll_seconds": "Wie oft der Statusendpunkt der Navimow-Cloud für alle Mäher abgefragt wird, 30–600 s. Standard 120."
+        }
       }
     }
   },
