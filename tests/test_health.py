@@ -1,12 +1,16 @@
 """Collector health: connection events from the paho callbacks, and the
 diagnostic entities that show them."""
 import asyncio
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from homeassistant.core import HomeAssistant
+
 from custom_components.navimow.binary_sensor import NavimowCloudConnected
 from custom_components.navimow.health import CollectorHealth, instrument_mqtt
+from custom_components.navimow.sensor import NavimowLastMessageSensor
 
 DEVICE = SimpleNamespace(id="dev-1", name="Mower", model="X430",
                          firmware_version="1.0", serial_number="SN1")
@@ -120,3 +124,64 @@ class CloudConnectedSensorTest(unittest.IsolatedAsyncioTestCase):
         health.note_disconnected("lost")
         self.assertEqual(sensor.async_write_ha_state.call_count, 2)
         sensor.async_on_remove.assert_called_once()
+
+
+class LastMessageSensorTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.hass = HomeAssistant(self.temp.name)
+        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.health = CollectorHealth()
+        self.sensor = NavimowLastMessageSensor(self.health, DEVICE)
+        self.sensor.hass = self.hass
+        self.sensor.async_write_ha_state = Mock()
+        self.removers = []
+        self.sensor.async_on_remove = self.removers.append
+        self.now = 1000.0
+        self.sensor._clock = lambda: self.now
+        await self.sensor.async_added_to_hass()
+
+    def writes(self):
+        return self.sensor.async_write_ha_state.call_count
+
+    async def test_first_message_is_written_at_once(self):
+        self.assertIsNone(self.sensor.native_value)
+        self.health.note_message("dev-1")
+        self.assertEqual(self.writes(), 1)
+        self.assertEqual(self.sensor.native_value, self.health.last_message_at["dev-1"])
+        self.assertEqual(self.sensor.unique_id, "navimow_dev-1_last_message")
+        self.assertEqual(self.sensor.device_class, "timestamp")
+
+    async def test_other_mowers_messages_are_ignored(self):
+        self.health.note_message("dev-2")
+        self.assertEqual(self.writes(), 0)
+
+    async def test_burst_is_throttled_and_its_last_message_flushed(self):
+        self.health.note_message("dev-1")
+        first = self.sensor.native_value
+        for step in (2, 4, 6):
+            self.now = 1000.0 + step
+            self.health.note_message("dev-1")
+        self.assertEqual(self.writes(), 1)
+        self.assertEqual(self.sensor.native_value, first)
+        self.assertIsNotNone(self.sensor._cancel_flush)
+        self.sensor._flush(None)  # the scheduled write at the end of the interval
+        self.assertEqual(self.writes(), 2)
+        self.assertEqual(self.sensor.native_value, self.health.last_message_at["dev-1"])
+
+    async def test_message_after_the_interval_is_written_at_once(self):
+        self.health.note_message("dev-1")
+        self.now += 30
+        self.health.note_message("dev-1")
+        self.assertEqual(self.writes(), 2)
+
+    async def test_removal_cancels_a_pending_write(self):
+        self.health.note_message("dev-1")
+        self.now += 1
+        self.health.note_message("dev-1")
+        for remove in self.removers:
+            remove()
+        self.assertIsNone(self.sensor._cancel_flush)
+        self.health.note_message("dev-1")
+        self.assertEqual(self.writes(), 1)

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import math
-
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
 
 from homeassistant.components.sensor import (
@@ -15,14 +16,17 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, LAST_MESSAGE_RESOLUTION
 from .coordinator import NavimowCoordinator
+from .entity import device_info
+from .health import CollectorHealth
 from .location import (
     POSE_SOURCE,
     progress_percent,
@@ -165,6 +169,8 @@ async def async_setup_entry(
                     entity_description=description,
                 )
             )
+    health = data["health"]
+    entities.extend(NavimowLastMessageSensor(health, device) for device in devices)
     async_add_entities(entities)
 
 
@@ -319,3 +325,67 @@ class NavimowDockSensor(NavimowSensor, RestoreSensor):
                 "restored" if self._restored_value is not None else "none"
             ),
         }
+
+
+class NavimowLastMessageSensor(SensorEntity):
+    """When the last MQTT message for this mower arrived (health.py).
+
+    A mower that is out sends a pose every two seconds, so the state is
+    written at most once per LAST_MESSAGE_RESOLUTION seconds; a message
+    held back by that limit is written when the interval ends, so the value
+    is never more than one interval behind.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Last message"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:message-arrow-left-outline"
+    _attr_should_poll = False
+    _clock = staticmethod(time.monotonic)
+
+    def __init__(self, health: CollectorHealth, device: Any) -> None:
+        self._health = health
+        self._device_id = device.id
+        self._attr_unique_id = f"{DOMAIN}_{device.id}_last_message"
+        self._attr_device_info = device_info(device)
+        self._shown: datetime | None = None
+        self._written_at: float | None = None
+        self._cancel_flush: Callable[[], None] | None = None
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._health.async_add_message_listener(self._on_message))
+        self.async_on_remove(self._cancel_pending_flush)
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self._shown
+
+    @callback
+    def _on_message(self, device_id: str) -> None:
+        if device_id != self._device_id or self._cancel_flush is not None:
+            return  # another mower, or a write is already scheduled
+        now = self._clock()
+        if self._written_at is None or now - self._written_at >= LAST_MESSAGE_RESOLUTION:
+            self._write()
+        else:
+            self._cancel_flush = async_call_later(
+                self.hass, LAST_MESSAGE_RESOLUTION - (now - self._written_at), self._flush
+            )
+
+    @callback
+    def _flush(self, _now: Any) -> None:
+        self._cancel_flush = None
+        self._write()
+
+    @callback
+    def _write(self) -> None:
+        self._shown = self._health.last_message_at.get(self._device_id)
+        self._written_at = self._clock()
+        self.async_write_ha_state()
+
+    @callback
+    def _cancel_pending_flush(self) -> None:
+        if self._cancel_flush is not None:
+            self._cancel_flush()
+            self._cancel_flush = None

@@ -171,6 +171,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Bearer <masked>" if auth_headers else "<none>",
         )
 
+        # Exists before the SDK connects: messages can arrive at once.
+        health = CollectorHealth()
         _location_cache: dict[str, dict] = {}
         _location_coordinators: dict[str, Any] = {}
         _mqtt_refresh_lock = asyncio.Lock()
@@ -243,6 +245,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     device_id,
                     payload_text,
                 )
+                if device_id:
+                    health.note_message(device_id)
                 if device_id and topic.endswith("/realtimeDate/location"):
                     received_at = dt_util.utcnow().isoformat()
                     try:
@@ -388,7 +392,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         sdk = await hass.async_add_executor_job(_create_sdk, api)
         _attach_mqtt_debug_hooks(sdk, api)
-        health = CollectorHealth()
         instrument_mqtt(sdk._mqtt, hass.loop, health)
         hass.async_create_task(_probe_mqtt_status(sdk))
 

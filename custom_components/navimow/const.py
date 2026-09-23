@@ -48,6 +48,9 @@ REST_POLL_MIN_SECONDS: Final = 30
 REST_POLL_MAX_SECONDS: Final = 600  # the most the option allows
 CONF_REST_POLL_SECONDS: Final = "rest_poll_seconds"  # entry option
 REST_POLL_MAX_BACKOFF: Final = 600
+# The last_message sensor is written at most once per this many seconds.
+LAST_MESSAGE_RESOLUTION: Final = 30
+
 # An extra REST poll this long after each command, to see its effect.
 COMMAND_POLL_DELAY: Final = 5
 

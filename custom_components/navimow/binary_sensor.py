@@ -10,10 +10,10 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
+from .entity import device_info
 from .health import CollectorHealth
 
 
@@ -25,18 +25,6 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]
     async_add_entities(
         NavimowCloudConnected(data["health"], device) for device in data["devices"]
-    )
-
-
-def device_info(device: Any) -> DeviceInfo:
-    """The mower's device entry, as the other platforms describe it."""
-    return DeviceInfo(
-        identifiers={(DOMAIN, device.id)},
-        name=device.name,
-        manufacturer="Navimow",
-        model=device.model or "Unknown",
-        sw_version=device.firmware_version or None,
-        serial_number=device.serial_number or device.id,
     )
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from homeassistant.core import CALLBACK_TYPE, callback
@@ -32,7 +33,10 @@ class CollectorHealth:
         self.disconnect_reason: str | None = None
         self.connect_failed_at: str | None = None
         self.connect_fail_reason: str | None = None
+        # When the last MQTT message for each device arrived.
+        self.last_message_at: dict[str, datetime] = {}
         self._listeners: list[Callable[[], None]] = []
+        self._message_listeners: list[Callable[[str], None]] = []
 
     @callback
     def async_add_listener(self, update: Callable[[], None]) -> CALLBACK_TYPE:
@@ -44,6 +48,25 @@ class CollectorHealth:
                 self._listeners.remove(update)
 
         return remove
+
+    @callback
+    def async_add_message_listener(self, update: Callable[[str], None]) -> CALLBACK_TYPE:
+        """Call ``update(device_id)`` for every message received; kept apart
+        from the other listeners because it fires every two seconds while a
+        mower is out."""
+        self._message_listeners.append(update)
+
+        def remove() -> None:
+            if update in self._message_listeners:
+                self._message_listeners.remove(update)
+
+        return remove
+
+    @callback
+    def note_message(self, device_id: str) -> None:
+        self.last_message_at[device_id] = dt_util.utcnow()
+        for update in list(self._message_listeners):
+            update(device_id)
 
     @callback
     def _notify(self) -> None:
