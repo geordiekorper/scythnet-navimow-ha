@@ -10,7 +10,10 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.navimow.binary_sensor import NavimowCloudConnected
 from custom_components.navimow.health import CollectorHealth, instrument_mqtt
-from custom_components.navimow.sensor import NavimowLastMessageSensor
+from custom_components.navimow.sensor import (
+    NavimowCollectorStatusSensor,
+    NavimowLastMessageSensor,
+)
 
 DEVICE = SimpleNamespace(id="dev-1", name="Mower", model="X430",
                          firmware_version="1.0", serial_number="SN1")
@@ -185,3 +188,75 @@ class LastMessageSensorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.sensor._cancel_flush)
         self.health.note_message("dev-1")
         self.assertEqual(self.writes(), 1)
+
+
+class CollectorStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.health = CollectorHealth()
+        self.heard = []
+        self.health.async_add_listener(lambda: self.heard.append(self.health.status))
+
+    def test_status_follows_connection_and_poll(self):
+        self.assertEqual(self.health.status, "starting")
+        self.health.note_connect_failed("refused")
+        self.assertEqual(self.health.status, "disconnected")
+        self.health.note_connected("c")
+        self.assertEqual(self.health.status, "ok")
+        self.health.poller = SimpleNamespace(last_error="HTTP 429", last_error_at="t", interval=120)
+        self.assertEqual(self.health.status, "poll_failing")
+        self.health.note_disconnected("lost")
+        self.assertEqual(self.health.status, "disconnected")
+
+    def test_counters_and_latest_events(self):
+        self.health.note_connected("c")
+        self.health.note_disconnected("lost")
+        self.health.note_connect_failed("refused")
+        self.health.note_connected("c")
+        self.health.note_credential_refresh()
+        self.health.note_rebuild("watchdog: silence")
+        attrs = self.health.status_attributes()
+        self.assertEqual(
+            (attrs["connects"], attrs["disconnects"], attrs["connect_failures"],
+             attrs["credential_refreshes"], attrs["rebuilds"]),
+            (2, 1, 1, 1, 1),
+        )
+        self.assertEqual(attrs["last_rebuild_reason"], "watchdog: silence")
+        self.assertIsNotNone(attrs["last_rebuild_at"])
+        self.assertIsNone(attrs["poll_interval"])
+
+    def test_token_expiry_notifies_only_on_change(self):
+        self.health.note_token(1700000000)
+        self.health.note_token(1700000000.0)
+        self.health.note_token(None)
+        self.assertEqual(len(self.heard), 1)
+        self.assertTrue(self.health.token_expires_at.startswith("2023-11-14T22:13:20"))
+
+    def test_poll_outcome_notifies_only_when_the_error_changes(self):
+        poller = SimpleNamespace(last_error=None, last_error_at=None, interval=120)
+        self.health.poller = poller
+        self.health.note_poll()  # healthy, as before
+        self.assertEqual(self.heard, [])
+        poller.last_error, poller.last_error_at = "HTTP 429", "t1"
+        self.health.note_poll()
+        self.health.note_poll()  # same failure, same poll
+        poller.last_error_at = "t2"
+        self.health.note_poll()  # failed again
+        poller.last_error, poller.last_error_at = None, None
+        self.health.note_poll()  # recovered
+        self.assertEqual(len(self.heard), 3)
+        self.assertEqual(self.health.status_attributes()["poll_interval"], 120)
+
+
+class CollectorStatusSensorTest(unittest.IsolatedAsyncioTestCase):
+    async def test_sensor_shows_status_and_writes_on_change(self):
+        health = CollectorHealth()
+        sensor = NavimowCollectorStatusSensor(health, DEVICE)
+        sensor.async_write_ha_state = Mock()
+        sensor.async_on_remove = Mock()
+        await sensor.async_added_to_hass()
+        self.assertEqual(sensor.unique_id, "navimow_dev-1_collector_status")
+        self.assertEqual(sensor.native_value, "starting")
+        health.note_connected("c")
+        self.assertEqual(sensor.native_value, "ok")
+        self.assertEqual(sensor.extra_state_attributes["connects"], 1)
+        sensor.async_write_ha_state.assert_called_once()

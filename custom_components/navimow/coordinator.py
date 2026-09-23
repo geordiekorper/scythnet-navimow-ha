@@ -88,8 +88,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._rest_status: DeviceStatus | None = None
         self._rest_raw: dict[str, Any] | None = None  # the reply as sent
         self._rest_polled_at: str | None = None
-        # The entry's steady REST poll, set by async_setup_entry.
+        # The entry's steady REST poll and connection health (rest_poll.py,
+        # health.py), set by async_setup_entry.
         self.rest_poller: Any = None
+        self.health: Any = None
         # Input received but not applied (rejected.py): a running count since
         # start-up and the latest item.
         self._rejected_count = 0
@@ -163,6 +165,8 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ConfigEntryAuthFailed("No access token after refresh")
         access_token = token["access_token"]
         self.api.set_token(access_token)
+        if self.health is not None:
+            self.health.note_token(token.get("expires_at"))
         return access_token
 
     async def _async_update_data(self) -> dict[str, Any]:

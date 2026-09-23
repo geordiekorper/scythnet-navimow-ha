@@ -98,6 +98,16 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         self.poller.async_request_poll(5)
         self.assertIsNone(self.poller.next_delay)
 
+    async def test_every_poll_reports_its_outcome(self):
+        self.poller.on_result = Mock()
+        await self.poller.async_poll()
+        self.api._async_request.side_effect = MowerAPIError("HTTP 500")
+        await self.poller.async_poll()
+        self.assertEqual(self.poller.on_result.call_count, 2)
+        self.api._async_request.side_effect = None
+        await self.poller.async_poll()
+        self.assertIsNone(self.poller.last_error_at)
+
 
 class FetchTest(unittest.IsolatedAsyncioTestCase):
     async def test_non_dict_entries_are_skipped(self):

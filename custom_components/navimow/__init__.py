@@ -362,6 +362,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         password=_new_password,
                     )
                 await hass.async_add_executor_job(_do_credential_update)
+                health.note_credential_refresh()
                 _LOGGER.info(
                     "MQTT credentials refreshed from server: username=%s",
                     _mask_secret(new_username),
@@ -406,6 +407,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 config_entry=entry,
                 location_cache=_location_cache,
             )
+            coordinator.health = health
             await coordinator.async_setup()
             await coordinator.async_config_entry_first_refresh()
             coordinators[device.id] = coordinator
@@ -421,6 +423,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS),
                 first._async_ensure_valid_token,
             )
+            health.poller = rest_poller
+            rest_poller.on_result = health.note_poll
             for coordinator in coordinators.values():
                 coordinator.rest_poller = rest_poller
             rest_poller.async_start()

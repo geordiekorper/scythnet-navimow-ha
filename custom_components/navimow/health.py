@@ -35,6 +35,18 @@ class CollectorHealth:
         self.connect_fail_reason: str | None = None
         # When the last MQTT message for each device arrived.
         self.last_message_at: dict[str, datetime] = {}
+        # Counters since start-up, and the latest of each kind of event.
+        self.connects = 0
+        self.disconnects = 0
+        self.connect_failures = 0
+        self.credential_refreshes = 0
+        self.rebuilds = 0
+        self.last_rebuild_reason: str | None = None
+        self.last_rebuild_at: str | None = None
+        self.token_expires_at: str | None = None
+        # The entry's REST poller (rest_poll.py), for its latest outcome.
+        self.poller: Any = None
+        self._poll_outcome: tuple[str | None, str | None] = (None, None)
         self._listeners: list[Callable[[], None]] = []
         self._message_listeners: list[Callable[[str], None]] = []
 
@@ -75,6 +87,7 @@ class CollectorHealth:
 
     @callback
     def note_connected(self, client_id: str | None = None) -> None:
+        self.connects += 1
         self.connected = True
         self.client_id = client_id or self.client_id
         self.connected_at = dt_util.utcnow().isoformat()
@@ -82,6 +95,7 @@ class CollectorHealth:
 
     @callback
     def note_disconnected(self, reason: str | None = None) -> None:
+        self.disconnects += 1
         self.connected = False
         self.disconnected_at = dt_util.utcnow().isoformat()
         self.disconnect_reason = reason
@@ -89,10 +103,71 @@ class CollectorHealth:
 
     @callback
     def note_connect_failed(self, reason: str) -> None:
+        self.connect_failures += 1
         self.connected = False
         self.connect_failed_at = dt_util.utcnow().isoformat()
         self.connect_fail_reason = reason
         self._notify()
+
+    @callback
+    def note_credential_refresh(self) -> None:
+        """Fresh broker credentials were fetched after a disconnect."""
+        self.credential_refreshes += 1
+        self._notify()
+
+    @callback
+    def note_rebuild(self, reason: str) -> None:
+        """The MQTT client was torn down and reconnected on purpose."""
+        self.rebuilds += 1
+        self.last_rebuild_reason = reason
+        self.last_rebuild_at = dt_util.utcnow().isoformat()
+        self._notify()
+
+    @callback
+    def note_token(self, expires_at: Any) -> None:
+        """The OAuth token in use and when it expires (epoch seconds)."""
+        try:
+            stamp = dt_util.utc_from_timestamp(float(expires_at)).isoformat()
+        except (TypeError, ValueError, OverflowError, OSError):
+            return
+        if stamp != self.token_expires_at:
+            self.token_expires_at = stamp
+            self._notify()
+
+    @callback
+    def note_poll(self) -> None:
+        """A REST poll finished; tell the listeners only if its error changed,
+        so a healthy poll does not rewrite the status every two minutes."""
+        poller = self.poller
+        outcome = (poller.last_error, poller.last_error_at) if poller else (None, None)
+        if outcome != self._poll_outcome:
+            self._poll_outcome = outcome
+            self._notify()
+
+    @property
+    def status(self) -> str:
+        """ok, starting (never connected yet), disconnected, or poll_failing."""
+        if not self.connected:
+            return "disconnected" if self.connects or self.connect_failures else "starting"
+        if self.poller is not None and self.poller.last_error:
+            return "poll_failing"
+        return "ok"
+
+    def status_attributes(self) -> dict[str, Any]:
+        poller = self.poller
+        return {
+            "connects": self.connects,
+            "disconnects": self.disconnects,
+            "connect_failures": self.connect_failures,
+            "credential_refreshes": self.credential_refreshes,
+            "rebuilds": self.rebuilds,
+            "last_rebuild_reason": self.last_rebuild_reason,
+            "last_rebuild_at": self.last_rebuild_at,
+            "poll_interval": poller.interval if poller else None,
+            "last_poll_error": poller.last_error if poller else None,
+            "last_poll_error_at": poller.last_error_at if poller else None,
+            "token_expires_at": self.token_expires_at,
+        }
 
     def connection_attributes(self) -> dict[str, Any]:
         return {

@@ -70,10 +70,11 @@ class RestPoller:
         self._due_in: float | None = None
         self._failures = 0
         self._stopped = True
-        # Outcome of the latest poll, for diagnostics.
+        # Outcome of the latest poll, for diagnostics, and who to tell.
         self.last_poll_at: str | None = None
         self.last_error: str | None = None
         self.last_error_at: str | None = None
+        self.on_result: Callable[[], None] | None = None
 
     @callback
     def async_start(self) -> None:
@@ -143,10 +144,15 @@ class RestPoller:
             )
             if not self._stopped:
                 self._schedule(delay)
+            if self.on_result is not None:
+                self.on_result()
             return
         self._failures = 0
         self.last_error = None
+        self.last_error_at = None
         self.last_poll_at = dt_util.utcnow().isoformat()
+        if self.on_result is not None:
+            self.on_result()
         for raw in statuses:
             coordinator = self.coordinators.get(str(raw.get("id") or raw.get("device_id") or ""))
             if coordinator is None:

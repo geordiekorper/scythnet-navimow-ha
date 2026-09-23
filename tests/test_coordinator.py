@@ -309,3 +309,12 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
     async def test_rest_details_of_a_reply_with_only_known_fields(self):
         self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:00:00+00:00")
         self.assertIsNone(self.coordinator.get_rest_details()[1]["unknown_fields"])
+
+    async def test_valid_token_expiry_reaches_the_health(self):
+        self.coordinator.oauth_session = SimpleNamespace(
+            token={"access_token": "t", "expires_at": 1700000000},
+            async_ensure_token_valid=AsyncMock(),
+        )
+        self.coordinator.health = SimpleNamespace(note_token=Mock())
+        await self.coordinator._async_ensure_valid_token()
+        self.coordinator.health.note_token.assert_called_once_with(1700000000)

@@ -171,6 +171,7 @@ async def async_setup_entry(
             )
     health = data["health"]
     entities.extend(NavimowLastMessageSensor(health, device) for device in devices)
+    entities.extend(NavimowCollectorStatusSensor(health, device) for device in devices)
     async_add_entities(entities)
 
 
@@ -389,3 +390,31 @@ class NavimowLastMessageSensor(SensorEntity):
         if self._cancel_flush is not None:
             self._cancel_flush()
             self._cancel_flush = None
+
+
+class NavimowCollectorStatusSensor(SensorEntity):
+    """The cloud session's health in one place (health.py): a short status
+    and the counters and latest errors behind it. The session belongs to the
+    config entry, so every mower on the entry shows the same values."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Collector status"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:cloud-check-outline"
+    _attr_should_poll = False
+
+    def __init__(self, health: CollectorHealth, device: Any) -> None:
+        self._health = health
+        self._attr_unique_id = f"{DOMAIN}_{device.id}_collector_status"
+        self._attr_device_info = device_info(device)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._health.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        return self._health.status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._health.status_attributes()
