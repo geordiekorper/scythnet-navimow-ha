@@ -19,13 +19,14 @@ Monitor and control Navimow robotic mowers in Home Assistant.
 
 The official integration exposes a `lawn_mower` entity and a battery sensor. The
 mower also continuously publishes its **live pose and current map partition**
-over MQTT (topic `/downlink/vehicle/{id}/realtimeDate/location`), but the bundled
-`navimow-sdk` neither subscribes to that topic nor parses it, so none of it
-reaches Home Assistant.
+over MQTT (topic `/downlink/vehicle/{id}/realtimeDate/location`), which the
+official integration's SDK, `navimow-sdk`, neither subscribes to nor parses.
 
-This fork makes the integration subscribe to that topic and turn it into
-entities, giving you these **additional sensors** per mower (populated while the
-mower is active):
+This fork runs on the community edition of the SDK,
+[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community),
+which subscribes to that topic and decodes it. What the fork adds are the
+entities built on it, giving you these **additional sensors** per mower
+(populated while the mower is active):
 
 | Entity | Meaning |
 | --- | --- |
@@ -33,14 +34,14 @@ mower is active):
 | `sensor.<mower>_position_x` | X position in meters (local grid; origin = the RTK/mapping reference, usually *near* the dock). Attributes carry the complete latest pose: `y`, `theta_rad`, `vehicle_state`, `pose_time_ms`, `received_at`, `source` |
 | `sensor.<mower>_position_y` | Y position in meters |
 | `sensor.<mower>_heading` | Mower orientation in degrees (0–360) |
-| `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too). Attributes carry the rest of the mower's task report: `route_progress` (0–10000), `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`, `mow_start_type`, `map_work_position`, `task_time_ms` |
+| `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too). Attributes carry the rest of the mower's task report: `route_progress` (0–10000; the last route reading reported, kept when a later task entry omits it), `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`, `mow_start_type`, `map_work_position`, `task_time_ms` |
 | `sensor.<mower>_mow_progress` | Planned-route progress for the current task as a percentage (the mower's 0–10000 route progress ÷ 100, falling back to its `mowingPercentage`); `unknown` until a task report arrives. Not area coverage. The `progress_source` attribute names the field used |
 | `sensor.<mower>_dock_x` / `_dock_y` | Dock position in meters — auto-learned by averaging the mower's pose while docked/charging; survives restarts. `unknown` until the mower has docked once. Used by the example map card to place the dock marker (the coordinate origin is **not** reliably the dock) |
-| `binary_sensor.<mower>_cloud_connected` | Diagnostic: on while the MQTT connection to the Navimow cloud is up (shared by all mowers of the account). Attributes `client_id`, `connected_at`, `disconnected_at` and `disconnect_reason`, `connect_failed_at` and `connect_fail_reason` (a refused CONNACK, or a failure before one, e.g. a token rejected at the WebSocket upgrade) |
+| `binary_sensor.<mower>_cloud_connected` | Diagnostic: on while the MQTT connection to the Navimow cloud is up (shared by all mowers of the account). Attributes `client_id`, `connected_at`, `disconnected_at` and `disconnect_reason`, `connect_failed_at` and `connect_fail_reason` (a refused CONNACK, or a failure before one, e.g. a token rejected at the WebSocket upgrade). The reasons come from the SDK: `requested` for a disconnect asked for, the MQTT library's reason text otherwise, `refused: …` with that text for a refused CONNACK, `connection failed before CONNACK` for a failure before one |
 | `sensor.<mower>_last_message` | Diagnostic timestamp: when the last MQTT message for this mower arrived, on any channel. Written at most every 30 s (a mower that is out sends a pose every 2 s), never more than 30 s behind. With `cloud_connected` it tells a quiet mower from a stalled connection |
-| `sensor.<mower>_collector_status` | Diagnostic: the cloud session's health in one place (shared by all mowers of the account). State `ok`, `starting` (not connected yet), `disconnected`, or `poll_failing` (MQTT up, REST polls failing). Attributes count `connects`, `disconnects`, `connect_failures`, `credential_refreshes` and `rebuilds` since start-up, with `last_rebuild_reason`/`_at`, `poll_interval`, `last_poll_error`/`_at` and `token_expires_at`. Written only when one of these changes |
+| `sensor.<mower>_collector_status` | Diagnostic: the cloud session's health in one place (shared by all mowers of the account). State `ok`, `starting` (not connected yet), `disconnected`, or `poll_failing` (MQTT up, REST polls failing). Attributes count `connects`, `disconnects`, `connect_failures` and `rebuilds` since start-up (the SDK's own counters) and `credential_refreshes` (broker credentials fetched again after a failed connection attempt: a refused CONNACK, or a failure before one, at most once a minute), with `last_rebuild_reason`/`_at`, `poll_interval`, `last_poll_error`/`_at` and `token_expires_at`. Written only when one of these changes |
 | `sensor.<mower>_rest_status` | Diagnostic: the latest REST status reply as sent. State is the raw `vehicleState` (`isDocked`, `isRunning`, `isIdel`, …, not the mapped activity); attributes `battery`, `battery_level` (`LOW`…`FULL`), `polled_at`, and `unknown_fields` for anything the reply carries beyond the known fields. One recorder row per poll |
-| `sensor.<mower>_rejected_input` | Diagnostic: input received but not applied — late, implausibly stamped or placeholder entries, fields or channels no decoder knows, payloads that do not parse. State is a count since start-up; attributes describe the latest item: `channel`, `topic`, `reason` (`reasons` when several applied), `received_at`, `payload` (cut to 8 KB, `truncated` says so). The recorder keeps every item, so the full sequence can be read back from history |
+| `sensor.<mower>_rejected_input` | Diagnostic: input received but not applied — late, implausibly stamped or placeholder entries, fields or channels no decoder knows, payloads that do not parse. The SDK judges the state and location messages; event and attributes messages are recorded whole as `unknown_channel` (no entity decodes them; attributes also show, as received, on the lawn mower entity's `attributes` attribute). State is a count since start-up; attributes describe the latest item: `channel`, `topic`, `reason` (`reasons` when several applied), `received_at`, `payload` (cut to 8 KB, `truncated` says so). The recorder keeps every item, so the full sequence can be read back from history |
 | `sensor.<mower>_data_source` | Diagnostic: which source supplied the current mower state (`mqtt_push`, `mqtt_cache`, `http_fallback`, `none`). Attributes hold the last MQTT state message and the last REST poll side by side (`mqtt_*`, `rest_*`), each with the device's own timestamp when it sent one and Home Assistant's receipt or poll time. REST status is polled every 120 s for all mowers in one call, whatever MQTT is doing (backing off to at most 10 min after failures); it becomes the shown state (`http_fallback`) only while MQTT has been silent for 5 min |
 
 These unlock zone-aware and position-aware automations — for example opening a
@@ -49,16 +50,17 @@ coordinates are a **local Cartesian grid in meters**, not latitude/longitude.
 
 ### How it works
 
-No changes to `navimow-sdk` are required — this fork is self-contained and works
-against the stock SDK from PyPI:
-
-* On MQTT connect, the integration subscribes to the `…/realtimeDate/location`
-  topic for each device.
-* Incoming location messages (a JSON array of objects keyed by `type`:
-  `1` = pose, `3` = partition/zone, `4` = task-delay) are decoded in
-  `location.py` and merged into a per-device record, so a pose update never
-  wipes the last-known zone.
-* The record is pushed to the coordinator and exposed via the four sensors above.
+* The SDK subscribes to the `…/realtimeDate/location` topic for each device
+  and decodes each message (a JSON array of entries keyed by `type`: `1` =
+  pose, `2` = task, `3` = target zone, `4` = task delay) into one merged
+  record per device, so a pose update never wipes the last-known zone. Late
+  or implausibly stamped entries are rejected and recorded on
+  `rejected_input`.
+* Each applied entry reaches the coordinator with the record as it stood
+  after it, and the sensors above read that record.
+* On a restart, the location sensors' last recorded states are handed back
+  to the SDK before the MQTT connection opens, so they show at once and a
+  late message older than them is still rejected.
 
 Because the location stream is delivered through Segway's cloud, these sensors
 update only while the mower is active and depend on internet connectivity. Build
@@ -222,8 +224,11 @@ that `…/realtimeDate/location` messages are arriving.
 
 ## Navimow SDK Library 📚
 
-This integration uses the `navimow-sdk` package to communicate with Navimow
-mowers. This fork does **not** modify the SDK.
+This fork uses [`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community),
+the community edition of the `navimow-sdk` package the official integration
+uses. The import name is the same (`mower_sdk`); the community edition adds the
+location channel, the late-state filter, connection counters and hooks, and the
+command verdicts this fork relies on. See Requirements under Installation.
 
 ## Relationship to upstream & contributing back
 
