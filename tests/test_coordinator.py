@@ -12,9 +12,9 @@ from homeassistant.core import HomeAssistant
 from mower_sdk.models import DeviceStateMessage, DeviceStatus
 
 from custom_components.navimow.coordinator import NavimowCoordinator
-from custom_components.navimow.location import parse_location_message, parse_location_payload
+from mower_sdk.location import LocationDecoder
 
-from tests.test_location import POSE, RECEIVED
+from tests.test_location import POSE, RECEIVED, RECEIVED_AT, decode
 
 # The full field set the REST status endpoint has been seen to return.
 REST_PAYLOAD = {
@@ -47,6 +47,7 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
             on_state=Mock(), on_attributes=Mock(),
             get_cached_state=Mock(return_value=None),
             get_cached_attributes=Mock(return_value=None),
+            restore_location=Mock(),
         )
         self.api = SimpleNamespace(
             async_get_device_status=AsyncMock(
@@ -161,55 +162,77 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         for word in ("token", "authorization", "bearer", "password", "pwd", "secret"):
             self.assertNotIn(word, text)
 
-    async def test_restore_seeds_the_cache_and_live_data_wins(self):
-        cache = {}
-        self.coordinator.location_cache = cache
-        pose = {"x": 2.0, "y": 0.3, "theta": 0.35, "vehicle_state": 1,
-                "pose_time": 1, "received_at": "2026-09-17T20:00:00+00:00"}
-        self.coordinator.restore_location("pose", pose)
-        loc = self.coordinator.get_device_location()
-        self.assertEqual(loc["x"], 2.0)
-        self.assertTrue(loc["pose_restored"])
-        self.assertEqual(cache["dev-1"]["x"], 2.0)
-        # a group that is already present is not overwritten
-        self.coordinator.restore_location("pose", {"x": 9.0, "y": 9.0})
-        self.assertEqual(self.coordinator.get_device_location()["x"], 2.0)
-        # a live pose merges over it and drops the marker
-        live = parse_location_payload(cache, "dev-1", [POSE], received_at=RECEIVED)
-        self.coordinator.ingest_location(live)
-        loc = self.coordinator.get_device_location()
-        self.assertEqual(loc["x"], 1.5)
-        self.assertNotIn("pose_restored", loc)
+    async def test_restore_assembles_one_record_and_hands_it_to_the_sdk_once(self):
+        published = []
+        self.coordinator.async_add_listener(
+            lambda: published.append(self.coordinator.get_device_location())
+        )
+        self.coordinator.restore_location("pose", {
+            "x": 2.0, "y": 0.3, "theta": 0.35, "vehicle_state": 1,
+            "pose_at": 1700000000000, "pose_received_at": RECEIVED,
+        })
+        self.coordinator.restore_location("task", {"current_zone": 2, "task_at": 1700000000032})
+        self.coordinator.restore_location("target", {"partition_ids": [3]})
+        # the entities show what was restored so far, at once
+        self.assertEqual([loc.x for loc in published], [2.0, 2.0, 2.0])
+        location = self.coordinator.get_device_location()
+        self.assertEqual((location.x, location.current_zone, location.partition_ids), (2.0, 2, (3,)))
+        self.assertEqual(location.pose_received_at, RECEIVED_AT)
+        for group in ("pose", "task", "target"):
+            self.assertTrue(self.coordinator.is_group_restored(group), group)
+        self.assertFalse(self.coordinator.is_group_restored("delay"))
+        self.sdk.restore_location.assert_not_called()
+        self.coordinator.async_finish_restore()
+        self.sdk.restore_location.assert_called_once_with("dev-1", location)
 
-    async def test_restore_without_a_cache_or_fields_is_a_no_op(self):
-        self.coordinator.restore_location("pose", {"x": 1.0, "y": 1.0})
-        self.assertIsNone(self.coordinator.get_device_location())
-        self.coordinator.location_cache = {}
+    async def test_nothing_restored_hands_nothing_to_the_sdk(self):
         self.coordinator.restore_location("pose", {})
+        self.assertIsNone(self.coordinator.get_device_location())
+        self.coordinator.async_finish_restore()
+        self.sdk.restore_location.assert_not_called()
+
+    async def test_a_live_entry_ends_the_restore_of_its_group_and_live_data_wins(self):
+        self.coordinator.restore_location("pose", {"x": 2.0, "y": 0.3})
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        for message in decode(POSE, decoder=decoder):
+            self.coordinator.ingest_location(message)
+        self.assertEqual(self.coordinator.get_device_location().x, 1.5)
+        self.assertFalse(self.coordinator.is_group_restored("pose"))
+        # a sensor restoring after live data arrived changes nothing
+        self.coordinator.restore_location("task", {"current_zone": 9})
+        self.assertIsNone(self.coordinator.get_device_location().current_zone)
+
+    async def test_another_devices_entry_is_ignored(self):
+        other = LocationDecoder().decode("dev-2", [POSE], RECEIVED_AT).messages
+        self.coordinator.ingest_location(other[0])
         self.assertIsNone(self.coordinator.get_device_location())
 
     async def test_restored_pose_does_not_train_the_dock(self):
-        cache = {}
-        self.coordinator.location_cache = cache
         self.coordinator._last_state = mqtt_message(state="docked", raw="isDocked")
         self.coordinator.restore_location("pose", {"x": 2.0, "y": 0.3})
-        self.coordinator.ingest_location(cache["dev-1"])
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        # a delay entry: the record it carries still holds the restored pose
+        (delay,) = decode({"type": 4, "taskDelay": False}, decoder=decoder)
+        self.assertEqual((delay.location.x, delay.location.y), (2.0, 0.3))
+        self.coordinator.ingest_location(delay)
         self.assertIsNone(self.coordinator.get_dock_position())
-        live = parse_location_payload(cache, "dev-1", [POSE], received_at=RECEIVED)
-        self.coordinator.ingest_location(live)
+        for message in decode(POSE, decoder=decoder):
+            self.coordinator.ingest_location(message)
         self.assertEqual(self.coordinator.get_dock_position()["n"], 1)
 
-    async def test_each_snapshot_of_a_message_is_published(self):
+    async def test_each_entry_of_a_message_is_published(self):
         published = []
         self.coordinator.async_add_listener(
-            lambda: published.append(self.coordinator.get_device_location()["x"])
+            lambda: published.append(self.coordinator.get_device_location().x)
         )
         poses = [
             {**POSE, "postureX": f"{i}.000", "time": 1700000000000 + 2000 * i}
             for i in range(1, 5)
         ]
-        for snap in parse_location_message({}, "dev-1", poses, received_at=RECEIVED).snapshots:
-            self.coordinator.ingest_location(snap)
+        for message in decode(*poses):
+            self.coordinator.ingest_location(message)
         self.assertEqual(published, [1.0, 2.0, 3.0, 4.0])
 
     async def test_rejected_input_counts_and_publishes_each_item(self):
@@ -343,9 +366,7 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["name"], "Mower")
         self.assertEqual(view["shown_state"], "mowing")
         self.assertFalse(view["has_pose"])
-        self.coordinator.ingest_location(
-            parse_location_payload({}, "dev-1", [POSE], received_at=RECEIVED)
-        )
+        self.coordinator.ingest_location(decode(POSE)[0])
         self.assertTrue(self.coordinator.get_watch_view(time.monotonic())["has_pose"])
 
     async def test_raw_state_check_catches_a_late_message_first(self):

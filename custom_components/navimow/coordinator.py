@@ -15,6 +15,8 @@ from mower_sdk.api import MowerAPI
 from mower_sdk.models import (
     Device,
     DeviceAttributesMessage,
+    DeviceLocation,
+    DeviceLocationMessage,
     DeviceStateMessage,
     DeviceStatus,
 )
@@ -49,7 +51,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         device: Device,
         oauth_session: config_entry_oauth2_flow.OAuth2Session | None = None,
         config_entry: ConfigEntry | None = None,
-        location_cache: dict[str, dict] | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -62,14 +63,18 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.api = api
         self.device = device
         self.oauth_session = oauth_session
-        # The per-device merge cache the MQTT location parser writes to;
-        # restored sensor states are seeded into it so live entries merge
-        # over them field by field.
-        self.location_cache = location_cache
         self.data: dict[str, Any] = {}
         self._last_state: DeviceStateMessage | None = None
         self._last_attributes: DeviceAttributesMessage | None = None
-        self._last_location: dict[str, Any] | None = None
+        # The SDK's merged location record, as of the last entry applied.
+        self._last_location: DeviceLocation | None = None
+        # The location sensors' restored fields (DeviceLocation names), and
+        # the groups that are still restored rather than live.
+        self._restored_fields: dict[str, Any] = {}
+        self._restored_groups: set[str] = set()
+        # Whether a task entry was applied or a task group restored: the
+        # record's task fields may all be None after a real task report.
+        self._has_task = False
         self._dock: dict[str, Any] | None = None  # learned {"x","y","n"}
         self._last_mqtt_update: float | None = None
         self._last_http_fetch: float | None = None
@@ -265,7 +270,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "shown_state": shown.state if shown else None,
             # Has this mower ever reported a position (restored ones count):
             # one whose location channel is silent altogether is not watched.
-            "has_pose": bool(self._last_location and self._last_location.get("pose_time")),
+            "has_pose": self._last_location is not None and self._last_location.pose_at is not None,
             "mqtt_state": mqtt.state if mqtt else None,
             "mqtt_key": self._mqtt_received_at,  # identifies the report
             "mqtt_age": None if received is None else now - received,
@@ -412,13 +417,26 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_attributes = attrs
         self.async_set_updated_data(self._build_data())
 
-    def ingest_location(self, location: dict) -> None:
-        if not isinstance(location, dict):
+    def ingest_location(self, message: DeviceLocationMessage) -> None:
+        """One applied entry of a location message, with the record after it."""
+        if message.device_id != self.device.id:
             return
-        if location.get("device_id") not in (None, self.device.id):
-            return
-        self._last_location = location
-        self._maybe_learn_dock(location)
+        # The restored group this entry type replaces is live from now on.
+        # A task entry replaces the progress reading only when it carried
+        # currentMowProgress (an explicit null counts).
+        if message.entry_type == 1:
+            self._restored_groups.discard("pose")
+        elif message.entry_type == 2:
+            self._has_task = True
+            self._restored_groups.discard("task")
+            if "currentMowProgress" in message.raw:
+                self._restored_groups.discard("progress")
+        elif message.entry_type == 3:
+            self._restored_groups.discard("target")
+        elif message.entry_type == 4:
+            self._restored_groups.discard("delay")
+        self._last_location = message.location
+        self._maybe_learn_dock(message.location)
         self.async_set_updated_data(self._build_data())
 
     def record_rejected(
@@ -445,39 +463,56 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._rejected_count, self._last_rejected
 
     def restore_location(self, group: str, fields: dict[str, Any]) -> None:
-        """Seed the shared location cache from a sensor's last recorded state.
+        """Collect a location sensor's restored fields (DeviceLocation names).
 
-        Live data wins: nothing is written for a group whose keys are already
-        in the cache. A restored group carries ``<group>_restored: True``
-        until the parser sees the first live entry of that type.
+        The entities show the record assembled so far at once; the whole of
+        it goes to the SDK in async_finish_restore(). A group stays restored
+        until a live entry of the type that replaces it is applied. Live data
+        wins: nothing is restored once a live record exists.
         """
-        cache = self.location_cache
-        if cache is None or not fields:
+        if not fields or (self._last_location is not None and not self._restored_groups):
             return
-        loc = dict(cache.get(self.device.id) or {"device_id": self.device.id})
-        if any(key in loc for key in fields):
-            return
-        loc.update(fields)
-        loc[f"{group}_restored"] = True
-        cache[self.device.id] = loc
-        self._last_location = loc
+        self._restored_fields.update(fields)
+        self._restored_groups.add(group)
+        if group == "task":
+            self._has_task = True
+        self._last_location = DeviceLocation.from_dict(
+            {**self._restored_fields, "device_id": self.device.id}
+        )
         self.async_set_updated_data(self._build_data())
 
-    def _maybe_learn_dock(self, location: dict) -> None:
+    def async_finish_restore(self) -> None:
+        """Hand the restored record to the SDK, before the client connects.
+
+        Its observation times become the SDK's high-water marks, so a late
+        entry older than what was shown before the restart is rejected as
+        stale.
+        """
+        if self._restored_groups and self._last_location is not None:
+            self.sdk.restore_location(self.device.id, self._last_location)
+
+    def has_task_report(self) -> bool:
+        """Whether a task entry was applied, or a task group restored."""
+        return self._has_task
+
+    def is_group_restored(self, group: str) -> bool:
+        """Whether a location group still shows its restored value."""
+        return group in self._restored_groups
+
+    def _maybe_learn_dock(self, location: DeviceLocation) -> None:
         """Average pose samples into the dock estimate while docked/charging."""
-        if location.get("pose_restored"):
+        if "pose" in self._restored_groups:
             return  # a restored pose is not a fresh sample
         state = self._last_state
         status = (state.state or "").lower() if state else ""
-        x, y = location.get("x"), location.get("y")
-        if status in DOCKED_STATES and x is not None and y is not None:
-            self._dock = update_dock_estimate(self._dock, x, y)
+        if status in DOCKED_STATES and location.x is not None and location.y is not None:
+            self._dock = update_dock_estimate(self._dock, location.x, location.y)
 
     def get_dock_position(self) -> dict | None:
         """Learned dock position {"x","y","n"}, or None if never seen docked."""
         return self._dock
 
-    def get_device_location(self) -> dict | None:
+    def get_device_location(self) -> DeviceLocation | None:
         return self.data.get("location")
 
     def get_device_state(self) -> DeviceStateMessage | None:

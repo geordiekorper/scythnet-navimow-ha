@@ -1,7 +1,6 @@
 """The Navimow integration."""
 import asyncio
 import json
-from collections import deque
 from collections.abc import Awaitable, Callable
 import logging
 from typing import Any
@@ -17,7 +16,6 @@ from homeassistant.exceptions import (
 )
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.util import dt as dt_util
 from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAPIError
 from mower_sdk.sdk import NavimowSDK
@@ -45,7 +43,6 @@ from .const import (
 if sdk_check.PROBLEM is None:
     from .coordinator import NavimowCoordinator
     from .services import async_setup_services, async_unload_services
-    from .location import location_topic, parse_location_message, strip_sdk_envelope
     from .rejected import raw_message_rejection
     from .health import CollectorHealth, device_id_from_topic
     from .rest_poll import RestPoller
@@ -102,13 +99,6 @@ def _attach_mqtt_hooks(
             mqtt.ws_path,
             mqtt.client_id,
         )
-        for _d in devices:
-            _did = getattr(_d, "id", None)
-            if _did:
-                try:
-                    mqtt.client.subscribe(location_topic(_did))
-                except Exception as _err:  # noqa: BLE001
-                    _LOGGER.warning("Failed to subscribe location topic: %s", _err)
 
     async def _on_ready() -> None:
         _LOGGER.info(
@@ -150,6 +140,34 @@ def _attach_mqtt_hooks(
     mqtt.on_disconnected = _on_disconnected
     mqtt.on_connect_fail = _on_connect_fail
     sdk.on_raw(_on_raw)
+
+
+def _attach_location_callbacks(sdk: NavimowSDK, coordinators: dict[str, Any]) -> None:
+    """Hand the SDK's decoded location entries and its location rejections to
+    the device's coordinator (``coordinators`` may be filled later)."""
+
+    @callback
+    def _on_location(message: Any) -> None:
+        # One per applied entry, in the order applied, on the event loop.
+        coordinator = coordinators.get(message.device_id)
+        if coordinator is not None:
+            coordinator.ingest_location(message)
+
+    @callback
+    def _on_rejected(message: Any) -> None:
+        # The state channel's rejections are still judged by the entry's
+        # on_message wrapper.
+        if message.channel != "location":
+            return
+        coordinator = coordinators.get(message.device_id)
+        if coordinator is not None:
+            coordinator.record_rejected(
+                "location", message.topic, message.reason,
+                message.payload.decode("utf-8", "replace"), list(message.reasons),
+            )
+
+    sdk.on_location(_on_location)
+    sdk.on_rejected(_on_rejected)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -266,36 +284,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Bearer <masked>" if auth_headers else "<none>",
         )
 
-        _location_cache: dict[str, dict] = {}
+        # device id -> coordinator, for the SDK's callbacks.
         _location_coordinators: dict[str, Any] = {}
-        # Location messages that arrive before the sensors have restored
-        # their last states wait here, and are parsed once restore is done:
-        # parsed earlier, a late one would fill the cache, restore would
-        # then skip the newer restored group, and its time could not guard.
-        # (Bounded: a pose every 2 s, and setup takes seconds.)
-        _location_backlog: deque[tuple[str, str, str, str]] = deque(maxlen=500)
-        _location_ready: list[bool] = [False]
-
-        def _process_location(topic: str, payload_text: str, device_id: str, received_at: str) -> None:
-            try:
-                _data = strip_sdk_envelope(json.loads(payload_text), device_id)
-            except (ValueError, TypeError):
-                _data = None
-            # One snapshot per entry, published in order, so every
-            # pose of a multi-pose message reaches the recorder.
-            _coord = _location_coordinators.get(device_id)
-            _parsed = parse_location_message(
-                _location_cache, device_id, _data, received_at=received_at
-            )
-            if _coord is not None:
-                for _loc in _parsed.snapshots:
-                    hass.loop.call_soon_threadsafe(_coord.ingest_location, _loc)
-                if _parsed.reason is not None:
-                    # The whole message, once, with every reason.
-                    hass.loop.call_soon_threadsafe(
-                        _coord.record_rejected, "location", topic,
-                        _parsed.reason, payload_text, list(_parsed.reasons),
-                    )
         _mqtt_refresh_lock = asyncio.Lock()
         # 用列表作为可变标志容器，使 async_unload_entry（不同函数作用域）可以修改它
         _unload_flag: list[bool] = [False]
@@ -314,11 +304,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     payload_text,
                 )
                 if device_id and topic.endswith("/realtimeDate/location"):
-                    item = (topic, payload_text, device_id, dt_util.utcnow().isoformat())
-                    if not _location_ready[0]:
-                        _location_backlog.append(item)
-                        return
-                    _process_location(*item)
+                    # The SDK decodes it (on_location) and judges it (on_rejected).
+                    if original_on_message is not None:
+                        await original_on_message(topic, payload, device_id)
                     return
                 # The SDK decodes the other channels, but only the fields it
                 # knows, and nothing here uses the event or attributes
@@ -368,6 +356,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 keepalive_seconds=MQTT_KEEPALIVE,
                 reconnect_min_delay=1,
                 reconnect_max_delay=60,
+                subscribe_location=True,
             )
             return sdk
 
@@ -380,14 +369,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         _attach_mqtt_hooks(sdk, health, devices, session.async_refresh_credentials)
         _wrap_on_message(sdk)
-        _LOGGER.info(
-            "Invoking SDK MQTT connect: broker=%s port=%s ws_path=%s",
-            mqtt_host,
-            mqtt_port,
-            ws_path,
-        )
-        await session.start()
-        hass.async_create_task(_probe_mqtt_status(sdk))
+        _attach_location_callbacks(sdk, _location_coordinators)
 
         coordinators: dict[str, NavimowCoordinator] = {}
         for device in devices:
@@ -398,7 +380,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 device=device,
                 oauth_session=oauth_session,
                 config_entry=entry,
-                location_cache=_location_cache,
             )
             coordinator.health = health
             coordinator.mqtt_session = session
@@ -451,11 +432,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # 转发到平台
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        # The sensors have restored their last states: parse what waited.
-        _location_ready[0] = True
-        for item in _location_backlog:
-            _process_location(*item)
-        _location_backlog.clear()
+        # The location sensors have restored their last states: the SDK gets
+        # the restored records before the first message can arrive, then the
+        # client connects. The first refresh above needed no MQTT.
+        for coordinator in coordinators.values():
+            coordinator.async_finish_restore()
+        _LOGGER.info(
+            "Invoking SDK MQTT connect: broker=%s port=%s ws_path=%s",
+            mqtt_host,
+            mqtt_port,
+            ws_path,
+        )
+        await session.start()
+        hass.async_create_task(_probe_mqtt_status(sdk))
         async_setup_services(hass)
 
         return True

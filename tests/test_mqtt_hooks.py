@@ -17,7 +17,7 @@ from mower_sdk.sdk import NavimowSDK
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
 
-from custom_components.navimow import _attach_mqtt_hooks
+from custom_components.navimow import _attach_location_callbacks, _attach_mqtt_hooks
 from custom_components.navimow.health import CollectorHealth
 
 DEVICE = SimpleNamespace(id="dev-1")
@@ -106,3 +106,47 @@ class HookWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(heard, ["dev-1", "dev-1"])
         self.assertIsNotNone(self.health.last_message_at("dev-1"))
         self.assertIsNotNone(self.health.location_age("dev-1"))
+
+
+class LocationCallbackTest(unittest.IsolatedAsyncioTestCase):
+    """Location messages through the real SDK facade to the coordinator."""
+
+    async def asyncSetUp(self):
+        self.sdk = NavimowSDK(
+            broker="wss://broker.example.invalid", port=443, ws_path="/mqtt/1",
+            loop=asyncio.get_running_loop(), records=[], subscribe_location=True,
+        )
+        self.coordinator = SimpleNamespace(ingested=[], rejected=[])
+        self.coordinator.ingest_location = self.coordinator.ingested.append
+        self.coordinator.record_rejected = lambda *args: self.coordinator.rejected.append(args)
+        _attach_location_callbacks(self.sdk, {"dev-1": self.coordinator})
+        self.client = self.sdk.mqtt.client
+
+    async def deliver(self, device_id, channel, payload):
+        topic = f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
+        self.client.on_message(self.client, None, SimpleNamespace(topic=topic, payload=payload))
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    async def test_each_applied_entry_reaches_the_coordinator(self):
+        await self.deliver("dev-1", "location", (
+            b'[{"type":1,"postureX":"1.5","postureY":"0.25","time":1700000000000},'
+            b'{"type":1,"postureX":"2.5","postureY":"0.25","time":1700000002000}]'
+        ))
+        self.assertEqual([m.location.x for m in self.coordinator.ingested], [1.5, 2.5])
+        self.assertEqual(self.coordinator.rejected, [])
+
+    async def test_a_location_rejection_is_recorded_with_its_reasons(self):
+        payload = b'[{"type":3,"partitionIds":[2],"time":5,"extra":1}]'
+        await self.deliver("dev-1", "location", payload)
+        self.assertEqual(self.coordinator.ingested, [])
+        ((channel, topic, reason, text, reasons),) = self.coordinator.rejected
+        self.assertEqual((channel, reason), ("location", "implausible_time"))
+        self.assertEqual(topic, "/downlink/vehicle/dev-1/realtimeDate/location")
+        self.assertEqual(text, payload.decode())
+        self.assertEqual(set(reasons), {"implausible_time", "unknown_field"})
+
+    async def test_other_devices_and_other_channels_are_not_recorded_here(self):
+        await self.deliver("dev-2", "location", b"not json")
+        await self.deliver("dev-1", "state", b"not json")
+        self.assertEqual(self.coordinator.rejected, [])

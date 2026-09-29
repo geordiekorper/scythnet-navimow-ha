@@ -29,10 +29,14 @@ from .entity import device_info
 from .health import CollectorHealth
 from .location import (
     POSE_SOURCE,
-    progress_percent,
+    TASK_ATTRIBUTES,
     restore_location_groups,
     target_zone,
 )
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -66,13 +70,13 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         key="position_x",
         name="Position X",
         native_unit_of_measurement="m",
-        value_fn=lambda c: (loc.get("x") if (loc := c.get_device_location()) else None),
+        value_fn=lambda c: (loc.x if (loc := c.get_device_location()) else None),
     ),
     NavimowSensorEntityDescription(
         key="position_y",
         name="Position Y",
         native_unit_of_measurement="m",
-        value_fn=lambda c: (loc.get("y") if (loc := c.get_device_location()) else None),
+        value_fn=lambda c: (loc.y if (loc := c.get_device_location()) else None),
     ),
     NavimowSensorEntityDescription(
         key="heading",
@@ -80,8 +84,8 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         native_unit_of_measurement="°",
         icon="mdi:compass",
         value_fn=lambda c: (
-            round(math.degrees(loc["theta"]) % 360, 1)
-            if (loc := c.get_device_location()) and loc.get("theta") is not None
+            round(math.degrees(loc.theta) % 360, 1)
+            if (loc := c.get_device_location()) and loc.theta is not None
             else None
         ),
     ),
@@ -90,7 +94,7 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         name="Mowing zone",
         icon="mdi:robot-mower",
         value_fn=lambda c: (
-            loc.get("mow_boundary") if (loc := c.get_device_location()) else None
+            loc.current_zone if (loc := c.get_device_location()) else None
         ),
     ),
     NavimowSensorEntityDescription(
@@ -117,7 +121,7 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         icon="mdi:progress-check",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda c: progress_percent(c.get_device_location())[0],
+        value_fn=lambda c: (loc.progress_percent if (loc := c.get_device_location()) else None),
     ),
     NavimowSensorEntityDescription(
         key="rest_status",
@@ -226,40 +230,44 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
         if key == "rejected_input":
             return self.coordinator.get_rejected()[1]
         loc = self.coordinator.get_device_location()
-        if not loc:
+        if loc is None:
             return None
-        restored = lambda *groups: any(loc.get(f"{g}_restored") for g in groups)
+        restored = lambda *groups: any(self.coordinator.is_group_restored(g) for g in groups)
         if key == "zone":
             # type-3 target and type-4 delay
             return {
-                "partition_ids": loc.get("partition_ids"),
-                "target_time_ms": loc.get("target_time_ms"),
-                "target_last_time_ms": loc.get("target_last_time_ms"),
-                "task_delay": loc.get("task_delay"),
-                "delay_received_at": loc.get("delay_received_at"),
+                "partition_ids": (
+                    list(loc.partition_ids) if loc.partition_ids is not None else None
+                ),
+                "target_time_ms": loc.target_at,
+                "target_last_time_ms": loc.target_last_at,
+                "task_delay": loc.task_delay,
+                "delay_received_at": _iso(loc.delay_received_at),
                 "is_restored": restored("target", "delay"),
             }
         if key == "position_x":
             # the complete latest type-1 pose, as one observation
-            if loc.get("x") is None:
+            if loc.x is None:
                 return None
             return {
-                "y": loc.get("y"),
-                "theta_rad": loc.get("theta"),
-                "vehicle_state": loc.get("vehicle_state"),
-                "pose_time_ms": loc.get("pose_time"),
-                "received_at": loc.get("received_at"),
+                "y": loc.y,
+                "theta_rad": loc.theta,
+                "vehicle_state": loc.vehicle_state,
+                "pose_time_ms": loc.pose_at,
+                "received_at": _iso(loc.pose_received_at),
                 "source": POSE_SOURCE,
                 "is_restored": restored("pose"),
             }
         if key == "mowing_zone":
-            # the latest type-2 task entry, as one observation
-            task = loc.get("task")
-            if not task:
+            # the latest type-2 task entry, and the kept route reading
+            if not self.coordinator.has_task_report():
                 return None
-            return {**task, "is_restored": restored("task")}
+            return {
+                **{attr: getattr(loc, name) for attr, name in TASK_ATTRIBUTES.items()},
+                "is_restored": restored("task"),
+            }
         if key == "mow_progress":
-            source = progress_percent(loc)[1]
+            source = loc.progress_source
             return {
                 "progress_source": source,
                 "is_restored": (
