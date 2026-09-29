@@ -9,6 +9,7 @@ from homeassistant.core import HassJob, HassJobType, HomeAssistant
 
 from custom_components.navimow.health import CollectorHealth
 from custom_components.navimow.watchdog import MqttWatchdog
+from tests.fakes import FakeMqtt
 
 
 class FakeCoordinator:
@@ -29,8 +30,10 @@ class WatchdogTestCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temp.cleanup)
         self.hass = HomeAssistant(self.temp.name)
         self.addAsyncCleanup(self.hass.async_stop, force=True)
-        self.health = CollectorHealth()
-        self.health.note_connected("c")
+        self.mqtt = FakeMqtt()
+        self.mqtt.connects = 1
+        self.health = CollectorHealth(self.mqtt)
+        self.health.note_connected()
         self.mower = FakeCoordinator()
         self.rebuild = AsyncMock()
         self.now = 10_000.0
@@ -84,7 +87,7 @@ class RestMismatchTest(WatchdogTestCase):
         self.assertEqual(await self.rebuilds(), [])
 
     async def test_never_connected_client_is_not_rebuilt(self):
-        self.health = CollectorHealth()
+        self.health = CollectorHealth(FakeMqtt())
         self.watchdog.health = self.health
         self.watchdog.async_check_after_poll()
         self.assertEqual(await self.rebuilds(), [])
@@ -108,7 +111,11 @@ class LocationSilenceTest(WatchdogTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.health.connected_monotonic = self.now - 1000
-        self.health.last_location_monotonic["dev-1"] = self.now - 10
+        self.last_location = self.now - 10
+        # The client's age of the last location message, on the test's clock.
+        self.health.location_age = lambda device_id: (
+            None if self.last_location is None else self.now - self.last_location
+        )
 
     async def test_silence_while_mowing_rebuilds(self):
         self.watchdog.async_check_silence()
@@ -138,13 +145,13 @@ class LocationSilenceTest(WatchdogTestCase):
         self.assertEqual(await self.rebuilds(), [])
 
     async def test_disconnected_client_is_left_to_reconnect(self):
-        self.health.note_disconnected("lost")
+        self.health.note_disconnected()
         self.now += 3600
         self.watchdog.async_check_silence()
         self.assertEqual(await self.rebuilds(), [])
 
     async def test_silence_counts_from_the_connect(self):
-        del self.health.last_location_monotonic["dev-1"]
+        self.last_location = None
         self.health.connected_monotonic = self.now - 100
         self.watchdog.async_check_silence()
         self.assertEqual(await self.rebuilds(), [])

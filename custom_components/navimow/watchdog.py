@@ -141,9 +141,12 @@ class MqttWatchdog:
                 continue
             if view["shown_state"] not in MOVING_STATES and view["rest_state"] not in MOVING_STATES:
                 continue
-            # Nothing can have arrived before this client connected.
-            heard = max(health.connected_monotonic, health.last_location_monotonic.get(device_id, 0.0))
-            quiet_for = now - heard
+            # Nothing can have arrived before this client connected, and no
+            # location message yet counts as quiet since the connect.
+            quiet_for = now - health.connected_monotonic
+            location_age = health.location_age(device_id)
+            if location_age is not None:
+                quiet_for = min(quiet_for, location_age)
             if quiet_for >= LOCATION_SILENCE:
                 self._request_rebuild(
                     now, f"no location message for {int(quiet_for)} s while {view['name']} runs"

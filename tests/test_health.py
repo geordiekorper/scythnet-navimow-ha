@@ -1,138 +1,134 @@
-"""Collector health: connection events from the paho callbacks, and the
-diagnostic entities that show them."""
-import asyncio
+"""Collector health: the SDK client's counters and reasons, the flag and stamps
+its hooks set, and the diagnostic entities that show them."""
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from homeassistant.core import HomeAssistant
 
 from custom_components.navimow.binary_sensor import NavimowCloudConnected
-from custom_components.navimow.health import CollectorHealth, instrument_mqtt
+from custom_components.navimow.health import CollectorHealth, device_id_from_topic
 from custom_components.navimow.sensor import (
     NavimowCollectorStatusSensor,
     NavimowLastMessageSensor,
 )
+from tests.fakes import FakeMqtt
 
 DEVICE = SimpleNamespace(id="dev-1", name="Mower", model="X430",
                          firmware_version="1.0", serial_number="SN1")
 
 
-class FakeSdkMqtt:
-    """The parts of the SDK's NavimowMQTT that instrument_mqtt touches."""
+class HealthFromClientTest(unittest.TestCase):
+    def setUp(self):
+        self.mqtt = FakeMqtt()
+        self.health = CollectorHealth(self.mqtt)
 
-    def __init__(self, connected=False):
-        self.calls = []
-        self.client = SimpleNamespace(_client_id=b"web_user_1")
-        self.connected = connected
+    def test_counters_reasons_and_client_id_are_the_clients(self):
+        self.mqtt.connects, self.mqtt.disconnects, self.mqtt.connect_failures = 3, 2, 1
+        self.mqtt.rebuilds, self.mqtt.last_rebuild_reason = 1, "watchdog: silence"
+        self.mqtt.last_disconnect_reason = "Unspecified error"
+        self.mqtt.last_connect_fail_reason = "connection failed before CONNACK"
+        self.assertEqual(
+            (self.health.connects, self.health.disconnects, self.health.connect_failures,
+             self.health.rebuilds, self.health.last_rebuild_reason),
+            (3, 2, 1, 1, "watchdog: silence"),
+        )
+        attrs = self.health.connection_attributes()
+        self.assertEqual(attrs["client_id"], "web_user_1")
+        self.assertEqual(attrs["disconnect_reason"], "Unspecified error")
+        self.assertEqual(attrs["connect_fail_reason"], "connection failed before CONNACK")
 
-    @property
-    def is_connected(self):
-        return self.connected
-
-    def _on_connect(self, client, userdata, flags, rc):
-        self.calls.append(("connect", rc))
-
-    def _on_disconnect(self, client, userdata, rc):
-        self.calls.append(("disconnect", rc))
-
-    def _build_new_client(self):
-        client = SimpleNamespace(_client_id=b"web_user_2")
-        client.on_connect = self._on_connect
-        client.on_disconnect = self._on_disconnect
-        return client
-
-
-class InstrumentTest(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.health = CollectorHealth()
-        self.mqtt = FakeSdkMqtt()
-        instrument_mqtt(self.mqtt, asyncio.get_running_loop(), self.health)
-
-    async def settle(self):
-        await asyncio.sleep(0)
-
-    async def test_connect_and_disconnect_are_reported_and_forwarded(self):
-        client = self.mqtt.client
-        client.on_connect(client, None, {}, 0)
-        await self.settle()
+    def test_the_hooks_set_the_flag_and_the_stamps(self):
+        self.health.note_connected()
         self.assertTrue(self.health.connected)
-        self.assertEqual(self.health.client_id, "web_user_1")
         self.assertIsNotNone(self.health.connected_at)
-        client.on_disconnect(client, None, 7)
-        await self.settle()
-        self.assertFalse(self.health.connected)
-        self.assertEqual(self.health.disconnect_reason, "lost (rc=7)")
-        self.assertEqual(self.mqtt.calls, [("connect", 0), ("disconnect", 7)])
-
-    async def test_refused_connect_is_a_failure(self):
-        self.mqtt.client.on_connect(self.mqtt.client, None, {}, 5)
-        await self.settle()
-        self.assertFalse(self.health.connected)
-        self.assertEqual(self.health.connect_fail_reason, "refused: not authorised")
-        self.assertEqual(self.mqtt.calls, [("connect", 5)])  # the SDK still sees it
-
-    async def test_failure_before_connack_is_reported(self):
-        self.mqtt.client.on_connect_fail(self.mqtt.client, None)
-        await self.settle()
-        self.assertEqual(self.health.connect_fail_reason, "connection failed before CONNACK")
-
-    async def test_rebuilt_clients_are_instrumented_too(self):
-        client = self.mqtt._build_new_client()
-        self.assertTrue(callable(client.on_connect_fail))
-        client.on_connect(client, None, {}, 0)
-        await self.settle()
-        self.assertEqual(self.health.client_id, "web_user_2")
-        self.assertEqual(self.mqtt.calls, [("connect", 0)])
-
-    async def test_already_connected_client_counts_as_connected(self):
-        health = CollectorHealth()
-        instrument_mqtt(FakeSdkMqtt(connected=True), asyncio.get_running_loop(), health)
-        self.assertTrue(health.connected)
-
-    async def test_location_messages_and_connects_are_timed_for_the_watchdog(self):
-        self.health.note_message("dev-1", "state")
-        self.assertNotIn("dev-1", self.health.last_location_monotonic)
-        self.health.note_message("dev-1", "location")
-        self.assertIn("dev-1", self.health.last_location_monotonic)
-        self.health.note_connected("c")
         self.assertIsNotNone(self.health.connected_monotonic)
+        self.health.note_disconnected()
+        self.assertFalse(self.health.connected)
+        self.assertIsNotNone(self.health.disconnected_at)
+        self.health.note_connected()
+        self.health.note_connect_failed()
+        self.assertFalse(self.health.connected)
+        self.assertIsNotNone(self.health.connect_failed_at)
 
-    async def test_listeners_hear_every_change_until_removed(self):
+    def test_message_times_are_the_clients(self):
+        stamp = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+        self.mqtt.message_at["dev-1"] = stamp
+        self.mqtt.location_age["dev-1"] = 12.5
+        self.assertEqual(self.health.last_message_at("dev-1"), stamp)
+        self.assertIsNone(self.health.last_message_at("dev-2"))
+        self.assertEqual(self.health.location_age("dev-1"), 12.5)
+        self.assertIsNone(self.health.location_age("dev-2"))
+
+    def test_a_rebuild_is_stamped_once_when_the_client_counted_it(self):
+        heard = []
+        self.health.async_add_listener(lambda: heard.append(self.health.last_rebuild_at))
+        self.health.note_rebuild()  # nothing rebuilt: no stamp
+        self.assertIsNone(self.health.last_rebuild_at)
+        self.mqtt.rebuilds, self.mqtt.last_rebuild_reason = 1, "credentials updated while disconnected"
+        self.health.note_rebuild()
+        self.health.note_rebuild()  # the same rebuild
+        self.assertIsNotNone(self.health.last_rebuild_at)
+        self.assertEqual(len(heard), 1)
+        self.assertEqual(self.health.status_attributes()["last_rebuild_reason"],
+                         "credentials updated while disconnected")
+
+    def test_listeners_hear_every_change_until_removed(self):
         heard = []
         remove = self.health.async_add_listener(lambda: heard.append(self.health.connected))
-        self.health.note_connected("c")
-        self.health.note_disconnected("lost")
+        self.health.note_connected()
+        self.health.note_disconnected()
         remove()
-        self.health.note_connected("c")
+        self.health.note_connected()
         self.assertEqual(heard, [True, False])
+
+    def test_message_listeners_hear_the_device(self):
+        heard = []
+        remove = self.health.async_add_message_listener(heard.append)
+        self.health.note_message("dev-1")
+        remove()
+        self.health.note_message("dev-1")
+        self.assertEqual(heard, ["dev-1"])
+
+
+class TopicTest(unittest.TestCase):
+    def test_device_id_comes_from_the_realtime_topics_only(self):
+        self.assertEqual(device_id_from_topic("/downlink/vehicle/dev-1/realtimeDate/state"), "dev-1")
+        self.assertEqual(device_id_from_topic("downlink/vehicle/dev-1/realtimeDate/location"), "dev-1")
+        for topic in ("/downlink/vehicle//realtimeDate/state", "/downlink/vehicle/dev-1/other/state",
+                      "/uplink/vehicle/dev-1/realtimeDate/state", "/downlink/vehicle/dev-1/realtimeDate",
+                      "/downlink/vehicle/dev-1/realtimeDate/state/extra", ""):
+            self.assertIsNone(device_id_from_topic(topic), topic)
 
 
 class CloudConnectedSensorTest(unittest.IsolatedAsyncioTestCase):
     def test_state_and_attributes_follow_the_health(self):
-        health = CollectorHealth()
+        mqtt = FakeMqtt()
+        health = CollectorHealth(mqtt)
         sensor = NavimowCloudConnected(health, DEVICE)
         self.assertEqual(sensor.unique_id, "navimow_dev-1_cloud_connected")
         self.assertFalse(sensor.is_on)
-        health.note_connected("web_user_1")
+        health.note_connected()
         self.assertTrue(sensor.is_on)
-        health.note_disconnected("lost (rc=7)")
+        mqtt.last_disconnect_reason = "Unspecified error"
+        health.note_disconnected()
         attrs = sensor.extra_state_attributes
         self.assertFalse(sensor.is_on)
         self.assertEqual(attrs["client_id"], "web_user_1")
-        self.assertEqual(attrs["disconnect_reason"], "lost (rc=7)")
+        self.assertEqual(attrs["disconnect_reason"], "Unspecified error")
         self.assertEqual(sensor.entity_category, "diagnostic")
         self.assertEqual(sensor.device_class, "connectivity")
 
     async def test_sensor_writes_its_state_on_every_change(self):
-        health = CollectorHealth()
+        health = CollectorHealth(FakeMqtt())
         sensor = NavimowCloudConnected(health, DEVICE)
         sensor.async_write_ha_state = Mock()
         sensor.async_on_remove = Mock()
         await sensor.async_added_to_hass()
-        health.note_connected("c")
-        health.note_disconnected("lost")
+        health.note_connected()
+        health.note_disconnected()
         self.assertEqual(sensor.async_write_ha_state.call_count, 2)
         sensor.async_on_remove.assert_called_once()
 
@@ -143,7 +139,8 @@ class LastMessageSensorTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temp.cleanup)
         self.hass = HomeAssistant(self.temp.name)
         self.addAsyncCleanup(self.hass.async_stop, force=True)
-        self.health = CollectorHealth()
+        self.mqtt = FakeMqtt()
+        self.health = CollectorHealth(self.mqtt)
         self.sensor = NavimowLastMessageSensor(self.health, DEVICE)
         self.sensor.hass = self.hass
         self.sensor.async_write_ha_state = Mock()
@@ -156,80 +153,86 @@ class LastMessageSensorTest(unittest.IsolatedAsyncioTestCase):
     def writes(self):
         return self.sensor.async_write_ha_state.call_count
 
+    def message(self, device_id):
+        """A message arrives: the client times it, then the raw hook notes it."""
+        self.mqtt.message_at[device_id] = datetime.now(timezone.utc)
+        self.health.note_message(device_id)
+
     async def test_first_message_is_written_at_once(self):
         self.assertIsNone(self.sensor.native_value)
-        self.health.note_message("dev-1")
+        self.message("dev-1")
         self.assertEqual(self.writes(), 1)
-        self.assertEqual(self.sensor.native_value, self.health.last_message_at["dev-1"])
+        self.assertEqual(self.sensor.native_value, self.mqtt.message_at["dev-1"])
         self.assertEqual(self.sensor.unique_id, "navimow_dev-1_last_message")
         self.assertEqual(self.sensor.device_class, "timestamp")
 
     async def test_message_before_the_entity_existed_is_shown(self):
-        health = CollectorHealth()
-        health.note_message("dev-1")
-        sensor = NavimowLastMessageSensor(health, DEVICE)
+        mqtt = FakeMqtt()
+        mqtt.message_at["dev-1"] = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+        sensor = NavimowLastMessageSensor(CollectorHealth(mqtt), DEVICE)
         sensor.async_on_remove = Mock()
         await sensor.async_added_to_hass()
-        self.assertEqual(sensor.native_value, health.last_message_at["dev-1"])
+        self.assertEqual(sensor.native_value, mqtt.message_at["dev-1"])
 
     async def test_other_mowers_messages_are_ignored(self):
-        self.health.note_message("dev-2")
+        self.message("dev-2")
         self.assertEqual(self.writes(), 0)
 
     async def test_burst_is_throttled_and_its_last_message_flushed(self):
-        self.health.note_message("dev-1")
+        self.message("dev-1")
         first = self.sensor.native_value
         for step in (2, 4, 6):
             self.now = 1000.0 + step
-            self.health.note_message("dev-1")
+            self.message("dev-1")
         self.assertEqual(self.writes(), 1)
         self.assertEqual(self.sensor.native_value, first)
         self.assertIsNotNone(self.sensor._cancel_flush)
         self.sensor._flush(None)  # the scheduled write at the end of the interval
         self.assertEqual(self.writes(), 2)
-        self.assertEqual(self.sensor.native_value, self.health.last_message_at["dev-1"])
+        self.assertEqual(self.sensor.native_value, self.mqtt.message_at["dev-1"])
 
     async def test_message_after_the_interval_is_written_at_once(self):
-        self.health.note_message("dev-1")
+        self.message("dev-1")
         self.now += 30
-        self.health.note_message("dev-1")
+        self.message("dev-1")
         self.assertEqual(self.writes(), 2)
 
     async def test_removal_cancels_a_pending_write(self):
-        self.health.note_message("dev-1")
+        self.message("dev-1")
         self.now += 1
-        self.health.note_message("dev-1")
+        self.message("dev-1")
         for remove in self.removers:
             remove()
         self.assertIsNone(self.sensor._cancel_flush)
-        self.health.note_message("dev-1")
+        self.message("dev-1")
         self.assertEqual(self.writes(), 1)
 
 
 class CollectorStatusTest(unittest.TestCase):
     def setUp(self):
-        self.health = CollectorHealth()
+        self.mqtt = FakeMqtt()
+        self.health = CollectorHealth(self.mqtt)
         self.heard = []
         self.health.async_add_listener(lambda: self.heard.append(self.health.status))
 
     def test_status_follows_connection_and_poll(self):
         self.assertEqual(self.health.status, "starting")
-        self.health.note_connect_failed("refused")
+        self.mqtt.connect_failures = 1
+        self.health.note_connect_failed()
         self.assertEqual(self.health.status, "disconnected")
-        self.health.note_connected("c")
+        self.mqtt.connects = 1
+        self.health.note_connected()
         self.assertEqual(self.health.status, "ok")
         self.health.poller = SimpleNamespace(last_error="HTTP 429", last_error_at="t", interval=120)
         self.assertEqual(self.health.status, "poll_failing")
-        self.health.note_disconnected("lost")
+        self.health.note_disconnected()
         self.assertEqual(self.health.status, "disconnected")
 
     def test_counters_and_latest_events(self):
-        self.health.note_connected("c")
-        self.health.note_disconnected("lost")
-        self.health.note_connect_failed("refused")
-        self.health.note_connected("c")
+        self.mqtt.connects, self.mqtt.disconnects, self.mqtt.connect_failures = 2, 1, 1
+        self.mqtt.rebuilds, self.mqtt.last_rebuild_reason = 1, "watchdog: silence"
         self.health.note_credential_refresh()
-        self.health.note_rebuild("watchdog: silence")
+        self.health.note_rebuild()
         attrs = self.health.status_attributes()
         self.assertEqual(
             (attrs["connects"], attrs["disconnects"], attrs["connect_failures"],
@@ -269,14 +272,16 @@ class CollectorStatusTest(unittest.TestCase):
 
 class CollectorStatusSensorTest(unittest.IsolatedAsyncioTestCase):
     async def test_sensor_shows_status_and_writes_on_change(self):
-        health = CollectorHealth()
+        mqtt = FakeMqtt()
+        health = CollectorHealth(mqtt)
         sensor = NavimowCollectorStatusSensor(health, DEVICE)
         sensor.async_write_ha_state = Mock()
         sensor.async_on_remove = Mock()
         await sensor.async_added_to_hass()
         self.assertEqual(sensor.unique_id, "navimow_dev-1_collector_status")
         self.assertEqual(sensor.native_value, "starting")
-        health.note_connected("c")
+        mqtt.connects = 1
+        health.note_connected()
         self.assertEqual(sensor.native_value, "ok")
         self.assertEqual(sensor.extra_state_attributes["connects"], 1)
         sensor.async_write_ha_state.assert_called_once()

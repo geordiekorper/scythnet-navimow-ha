@@ -167,6 +167,23 @@ and login), then add this fork as above and download it. Do **not** delete the
 Navimow integration from Settings → Devices & Services, or you'll have to
 re-authenticate.
 
+### Requirements
+
+The integration requires the community edition of the Navimow SDK,
+[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community),
+which Home Assistant installs at the first start after the update. It and the
+upstream `navimow-sdk` (which earlier releases of this integration and the
+official integration pull in) both provide the `mower_sdk` package. Home
+Assistant never uninstalls a requirement, so both stay listed until the
+container is recreated (Home Assistant Container) or until both are uninstalled
+by hand and Home Assistant restarted (Home Assistant Core in a virtual
+environment). After the install, the files in use are the community edition's;
+the SDK logs a warning while both are listed. If the `mower_sdk` package on
+disk is not the distribution the integration requires (the upstream package
+installed again over it, or another copy earlier on the path), the integration
+refuses to start and its error names the versions found, where the package was
+loaded from, and what to remove.
+
 ## Usage 🎮
 
 After setup you should see:

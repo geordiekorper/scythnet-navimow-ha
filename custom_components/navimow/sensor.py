@@ -356,7 +356,7 @@ class NavimowLastMessageSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         # Messages can arrive before the entity exists; start from the last.
-        self._shown = self._health.last_message_at.get(self._device_id)
+        self._shown = self._health.last_message_at(self._device_id)
         self.async_on_remove(self._health.async_add_message_listener(self._on_message))
         self.async_on_remove(self._cancel_pending_flush)
 
@@ -383,7 +383,7 @@ class NavimowLastMessageSensor(SensorEntity):
 
     @callback
     def _write(self) -> None:
-        self._shown = self._health.last_message_at.get(self._device_id)
+        self._shown = self._health.last_message_at(self._device_id)
         self._written_at = self._clock()
         self.async_write_ha_state()
 
