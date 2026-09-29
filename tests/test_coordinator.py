@@ -129,6 +129,14 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(details["rest_polled_at"])
         self.assertIsNone(details["mqtt_state"])
 
+    async def test_a_rest_status_becomes_the_state_through_the_sdks_conversion(self):
+        status = DeviceStatus.from_dict({**REST_PAYLOAD, "timestamp": 1700000000})
+        self.coordinator.apply_rest_status({**REST_PAYLOAD, "timestamp": 1700000000}, "2026-09-17T20:00:00+00:00")
+        state = self.coordinator.get_device_state()
+        self.assertEqual(state, DeviceStateMessage.from_status(status))
+        self.assertEqual((state.state, state.battery, state.timestamp), ("docked", 100, 1700000000000))
+        self.assertIsNone(state.error)
+
     async def test_snapshots_do_not_overwrite_each_other(self):
         self.coordinator._update_from_state(mqtt_message(), "2026-09-17T20:00:00+00:00")
         self.coordinator._last_mqtt_update = None  # MQTT went quiet

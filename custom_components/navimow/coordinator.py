@@ -20,6 +20,7 @@ from mower_sdk.models import (
     DeviceLocationMessage,
     DeviceStateMessage,
     DeviceStatus,
+    REST_STATUS_KNOWN_FIELDS,
 )
 from mower_sdk.sdk import NavimowSDK
 
@@ -33,7 +34,7 @@ from .location import (
     DOCKED_STATES,
     update_dock_estimate,
 )
-from .rejected import REST_KNOWN_FIELDS, rejection_record
+from .rejected import rejection_record
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,24 +120,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
         }
 
-    def _device_status_to_state(self, status: DeviceStatus) -> DeviceStateMessage:
-        error: dict[str, Any] | None = None
-        if status.error_code and status.error_code.value != "none":
-            error = {
-                "code": status.error_code.value,
-                "message": status.error_message,
-            }
-        return DeviceStateMessage(
-            device_id=status.device_id,
-            timestamp=status.timestamp,
-            state=status.status.value,
-            battery=status.battery,
-            signal_strength=status.signal_strength,
-            position=status.position,
-            error=error,
-            metrics=None,
-        )
-
     async def _async_ensure_valid_token(self) -> str | None:
         if not self.oauth_session:
             return None
@@ -215,7 +198,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 status = await self.api.async_get_device_status(self.device.id)
                 self._rest_status = status
                 self._rest_polled_at = dt_util.utcnow().isoformat()
-                self._last_state = self._device_status_to_state(status)
+                self._last_state = DeviceStateMessage.from_status(status)
                 self._last_http_fetch = now
                 self._last_data_source = "http_fallback"
             except ConfigEntryAuthFailed:
@@ -249,7 +232,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = time.monotonic()
         self._last_http_fetch = now
         if self._last_mqtt_update is None or now - self._last_mqtt_update > MQTT_STALE_SECONDS:
-            self._last_state = self._device_status_to_state(status)
+            self._last_state = DeviceStateMessage.from_status(status)
             self._last_data_source = "http_fallback"
         self.async_set_updated_data(self._build_data())
 
@@ -275,14 +258,14 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def get_rest_details(self) -> tuple[str | None, dict[str, Any] | None]:
         """The latest REST reply as sent: its raw vehicleState, and the rest.
 
-        Fields outside REST_KNOWN_FIELDS are kept under ``unknown_fields`` so
+        Fields outside the SDK's REST_STATUS_KNOWN_FIELDS are kept under ``unknown_fields`` so
         a field the cloud starts sending is visible in history.
         """
         raw = self._rest_raw
         if raw is None:
             return None, None
         status = self._rest_status
-        unknown = {k: v for k, v in raw.items() if k not in REST_KNOWN_FIELDS}
+        unknown = {k: v for k, v in raw.items() if k not in REST_STATUS_KNOWN_FIELDS}
         vehicle_state = raw.get("vehicleState")
         return (
             vehicle_state if isinstance(vehicle_state, str) else None,

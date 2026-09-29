@@ -74,11 +74,3 @@ def rejection_record(
         "payload": _cut(text, PAYLOAD_LIMIT) if truncated else text,
         "truncated": truncated,
     }
-
-
-# The fields a REST status reply is known to carry (as in Scythnet). Others
-# are shown under unknown_fields on the rest_status sensor.
-REST_KNOWN_FIELDS = frozenset({
-    "id", "device_id", "deviceId", "vehicleState", "capacityRemaining",
-    "descriptiveCapacityRemaining", "battery",
-})

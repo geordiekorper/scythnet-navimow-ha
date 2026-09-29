@@ -9,16 +9,16 @@ from homeassistant.core import HomeAssistant
 from mower_sdk.errors import MowerAPIError
 
 from custom_components.navimow.const import REST_POLL_MAX_BACKOFF
-from custom_components.navimow.rest_poll import RestPoller, async_fetch_statuses
+from custom_components.navimow.rest_poll import RestPoller
 
 DOCKED = {"id": "dev-1", "vehicleState": "isDocked",
           "capacityRemaining": [{"unit": "PERCENTAGE", "rawValue": 100}],
           "descriptiveCapacityRemaining": "FULL"}
 
 
-def reply(*devices, code=1):
-    return {"code": code, "desc": "ok" if code == 1 else "rate limited",
-            "data": {"payload": {"devices": list(devices)}}}
+def reply(*devices):
+    """The status entries as MowerAPI.async_get_vehicle_status_raw returns them."""
+    return list(devices)
 
 
 class RestPollerTest(unittest.IsolatedAsyncioTestCase):
@@ -27,7 +27,7 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temp.cleanup)
         self.hass = HomeAssistant(self.temp.name)
         self.addAsyncCleanup(self.hass.async_stop, force=True)
-        self.api = SimpleNamespace(_async_request=AsyncMock(return_value=reply(DOCKED)))
+        self.api = SimpleNamespace(async_get_vehicle_status_raw=AsyncMock(return_value=reply(DOCKED)))
         self.coordinators = {
             "dev-1": SimpleNamespace(apply_rest_status=Mock()),
             "dev-2": SimpleNamespace(apply_rest_status=Mock()),
@@ -40,14 +40,11 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
     async def test_one_call_covers_every_mower(self):
         await self.poller.async_poll()
         self.token.assert_awaited_once()
-        self.api._async_request.assert_awaited_once_with(
-            "POST", "/openapi/smarthome/getVehicleStatus",
-            data={"devices": [{"id": "dev-1"}, {"id": "dev-2"}]},
-        )
+        self.api.async_get_vehicle_status_raw.assert_awaited_once_with(["dev-1", "dev-2"])
 
     async def test_reply_goes_to_its_mower_whole(self):
         raw = {**DOCKED, "newField": 7}
-        self.api._async_request.return_value = reply(raw, {"id": "stranger"})
+        self.api.async_get_vehicle_status_raw.return_value = reply(raw, {"id": "stranger"})
         await self.poller.async_poll()
         args = self.coordinators["dev-1"].apply_rest_status.call_args.args
         self.assertEqual(args[0], raw)
@@ -56,7 +53,7 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.poller.next_delay, 120)
 
     async def test_failures_back_off_and_recover(self):
-        self.api._async_request.side_effect = MowerAPIError("HTTP 429")
+        self.api.async_get_vehicle_status_raw.side_effect = MowerAPIError("HTTP 429")
         delays = []
         for _ in range(4):
             await self.poller.async_poll()
@@ -64,13 +61,14 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delays, [240, 480, REST_POLL_MAX_BACKOFF, REST_POLL_MAX_BACKOFF])
         self.assertIn("429", self.poller.last_error)
         self.assertIsNotNone(self.poller.last_error_at)
-        self.api._async_request.side_effect = None
+        self.api.async_get_vehicle_status_raw.side_effect = None
         await self.poller.async_poll()
         self.assertEqual(self.poller.next_delay, 120)
         self.assertIsNone(self.poller.last_error)
 
     async def test_cloud_error_code_is_a_failure(self):
-        self.api._async_request.return_value = reply(code=0)
+        # The SDK checks the reply's envelope and raises for an error code.
+        self.api.async_get_vehicle_status_raw.side_effect = MowerAPIError("rate limited")
         await self.poller.async_poll()
         self.assertIn("rate limited", self.poller.last_error)
         self.coordinators["dev-1"].apply_rest_status.assert_not_called()
@@ -78,7 +76,7 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
     async def test_token_failure_is_a_failure(self):
         self.token.side_effect = RuntimeError("refresh failed")
         await self.poller.async_poll()
-        self.api._async_request.assert_not_awaited()
+        self.api.async_get_vehicle_status_raw.assert_not_awaited()
         self.assertEqual(self.poller.next_delay, 240)
 
     async def test_outcome_is_reported_after_the_replies_are_applied(self):
@@ -113,10 +111,10 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
     async def test_every_poll_reports_its_outcome(self):
         self.poller.on_result = Mock()
         await self.poller.async_poll()
-        self.api._async_request.side_effect = MowerAPIError("HTTP 500")
+        self.api.async_get_vehicle_status_raw.side_effect = MowerAPIError("HTTP 500")
         await self.poller.async_poll()
         self.assertEqual([c.args for c in self.poller.on_result.call_args_list], [(True,), (False,)])
-        self.api._async_request.side_effect = None
+        self.api.async_get_vehicle_status_raw.side_effect = None
         await self.poller.async_poll()
         self.assertIsNone(self.poller.last_error_at)
 
@@ -138,7 +136,7 @@ class SchedulingTest(unittest.IsolatedAsyncioTestCase):
             await self.gate.wait()
             return reply(DOCKED)
 
-        self.api = SimpleNamespace(_async_request=request)
+        self.api = SimpleNamespace(async_get_vehicle_status_raw=request)
         self.coordinators = {"dev-1": SimpleNamespace(apply_rest_status=Mock())}
         self.poller = RestPoller(self.hass, self.api, self.coordinators, 120, AsyncMock())
         self.now = 1000.0
@@ -182,13 +180,3 @@ class SchedulingTest(unittest.IsolatedAsyncioTestCase):
         self.gate.set()
         await poll
         self.assertEqual(self.poller.next_delay, 300)
-
-
-class FetchTest(unittest.IsolatedAsyncioTestCase):
-    async def test_non_dict_entries_are_skipped(self):
-        api = SimpleNamespace(_async_request=AsyncMock(return_value=reply(DOCKED, "junk")))
-        self.assertEqual(await async_fetch_statuses(api, ["dev-1"]), [DOCKED])
-
-    async def test_missing_payload_is_empty(self):
-        api = SimpleNamespace(_async_request=AsyncMock(return_value={"code": 1}))
-        self.assertEqual(await async_fetch_statuses(api, ["dev-1"]), [])
