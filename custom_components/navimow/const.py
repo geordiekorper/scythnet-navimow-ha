@@ -31,13 +31,6 @@ MQTT_PORT: Final = 1883
 MQTT_USERNAME: Final | None = None
 MQTT_PASSWORD: Final | None = None
 
-# MQTT keepalive (seconds). Something between client and broker drops a link
-# that has been idle for about ten minutes without a FIN or DISCONNECT; the
-# SDK's default of 2400 s leaves such a dead link unnoticed for up to 40
-# minutes. A ping every minute keeps the link from idling that long and
-# detects a dead one within about two minutes. The broker's floor is 30 s.
-MQTT_KEEPALIVE: Final = 60
-
 # 更新间隔（秒）
 UPDATE_INTERVAL: Final = 30
 
@@ -80,3 +73,10 @@ MOWER_STATUS_TO_ACTIVITY = {
     "error": "error",
     "unknown": "error",
 }
+# Home Assistant's activities have no mapping (a map edit) or updating (a
+# software update): both show as an idle mower does, and follow that row if
+# it changes. The canonical state stays in the entity's status attribute and
+# the sensors. A mower the cloud reports offline is an error.
+MOWER_STATUS_TO_ACTIVITY["mapping"] = MOWER_STATUS_TO_ACTIVITY["idle"]
+MOWER_STATUS_TO_ACTIVITY["updating"] = MOWER_STATUS_TO_ACTIVITY["idle"]
+MOWER_STATUS_TO_ACTIVITY["offline"] = "error"

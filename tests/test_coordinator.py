@@ -392,7 +392,6 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["mqtt_key"], "2026-09-17T20:00:00+00:00")
         self.assertGreaterEqual(view["mqtt_age"], 150)
         self.assertEqual(view["rest_state"], "docked")
-        self.assertEqual(view["rest_raw_state"], "isDocked")
         self.assertEqual(view["name"], "Mower")
         self.assertEqual(view["shown_state"], "mowing")
         self.assertFalse(view["has_pose"])

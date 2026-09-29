@@ -37,10 +37,12 @@ from .health import CollectorHealth
 _LOGGER = logging.getLogger(__name__)
 
 # REST states the MQTT state channel never echoes, so disagreeing with them
-# says nothing about MQTT: raw strings, and the SDK's catch-all.
-IGNORED_REST_RAW = frozenset({"Offline", "offline", "inSoftwareUpdate"})
-IGNORED_REST_STATES = frozenset({"unknown"})
-# States in which a mower that is out sends a pose every two seconds.
+# says nothing about MQTT: offline, a software update, and the SDK's
+# catch-all.
+IGNORED_REST_STATES = frozenset({"unknown", "offline", "updating"})
+# States in which a mower that is out sends a pose every two seconds. Not
+# mapping: during a map edit the mower sends poses only where it halts, up
+# to eight minutes apart.
 MOVING_STATES = frozenset({"mowing", "returning"})
 CHECK_SECONDS = 30
 
@@ -109,7 +111,7 @@ class MqttWatchdog:
             if mqtt_state == rest_state:
                 self._acted_on.pop(device_id, None)
                 continue
-            if rest_state in IGNORED_REST_STATES or view["rest_raw_state"] in IGNORED_REST_RAW:
+            if rest_state in IGNORED_REST_STATES:
                 continue
             if view["mqtt_age"] is None or view["mqtt_age"] < REST_CACHE_LAG:
                 continue  # REST may simply not have caught up yet

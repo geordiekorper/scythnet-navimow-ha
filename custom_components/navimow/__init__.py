@@ -34,7 +34,6 @@ from .const import (
     MQTT_PORT,
     MQTT_USERNAME,
     MQTT_PASSWORD,
-    MQTT_KEEPALIVE,
     REST_POLL_SECONDS,
     CONF_REST_POLL_SECONDS,
 )
@@ -305,7 +304,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 auth_headers=auth_headers,
                 loop=hass.loop,
                 records=devices,
-                keepalive_seconds=MQTT_KEEPALIVE,
                 reconnect_min_delay=1,
                 reconnect_max_delay=60,
                 subscribe_location=True,

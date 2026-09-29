@@ -252,7 +252,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "mqtt_key": self._mqtt_received_at,  # identifies the report
             "mqtt_age": None if received is None else now - received,
             "rest_state": rest.status.value if rest else None,
-            "rest_raw_state": (self._rest_raw or {}).get("vehicleState"),
         }
 
     def get_rest_details(self) -> tuple[str | None, dict[str, Any] | None]:

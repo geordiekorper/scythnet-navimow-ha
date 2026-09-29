@@ -16,7 +16,7 @@ class FakeCoordinator:
     def __init__(self, name="Mower"):
         self.view = {
             "name": name, "mqtt_state": "mowing", "mqtt_key": "t1", "mqtt_age": 600.0,
-            "rest_state": "docked", "rest_raw_state": "isDocked",
+            "rest_state": "docked",
             "shown_state": "mowing", "has_pose": True,
         }
 
@@ -74,8 +74,8 @@ class RestMismatchTest(WatchdogTestCase):
         self.assertEqual(await self.rebuilds(), [])
 
     async def test_states_mqtt_never_echoes_are_ignored(self):
-        for raw, state in (("Offline", "unknown"), ("inSoftwareUpdate", "paused"), ("weird", "unknown")):
-            self.mower.view.update(rest_raw_state=raw, rest_state=state)
+        for state in ("offline", "updating", "unknown"):
+            self.mower.view.update(rest_state=state)
             self.watchdog.async_check_after_poll()
         self.assertEqual(await self.rebuilds(), [])
 
@@ -131,6 +131,13 @@ class LocationSilenceTest(WatchdogTestCase):
         self.now += 600
         self.watchdog.async_check_silence()
         self.assertEqual(len(await self.rebuilds()), 1)
+
+    async def test_a_mapping_mower_quiet_for_ten_minutes_is_left_alone(self):
+        # A map edit sends poses only where the mower halts, minutes apart.
+        self.mower.view.update(shown_state="mapping", rest_state="mapping")
+        self.now += 600
+        self.watchdog.async_check_silence()
+        self.assertEqual(await self.rebuilds(), [])
 
     async def test_docked_mower_is_quiet_by_design(self):
         self.mower.view.update(shown_state="docked", rest_state="docked")
