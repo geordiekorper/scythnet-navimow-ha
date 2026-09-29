@@ -5,11 +5,17 @@ import json
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from homeassistant.core import HomeAssistant
-from mower_sdk.models import DeviceStateMessage, DeviceStatus
+from mower_sdk.models import (
+    DeviceAttributesMessage,
+    DeviceEventMessage,
+    DeviceStateMessage,
+    DeviceStatus,
+)
 
 from custom_components.navimow.coordinator import NavimowCoordinator
 from mower_sdk.location import LocationDecoder
@@ -44,7 +50,7 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.hass = HomeAssistant(self.temp.name)
         self.addAsyncCleanup(self.hass.async_stop, force=True)
         self.sdk = SimpleNamespace(
-            on_state=Mock(), on_attributes=Mock(),
+            on_state=Mock(), on_event=Mock(), on_attributes=Mock(),
             get_cached_state=Mock(return_value=None),
             get_cached_attributes=Mock(return_value=None),
             restore_location=Mock(),
@@ -251,49 +257,65 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(latest["received_at"])
         self.assertEqual(published[0][1]["channel"], "location")
 
-    async def test_late_state_message_is_recorded_not_applied(self):
-        newer = mqtt_message(state="docked", raw="isDocked", timestamp=1700000060)
-        older = mqtt_message(state="mowing", raw="isRunning", timestamp=1700000000)
-        self.coordinator._update_from_state(newer, "2026-09-17T20:01:00+00:00")
-        self.coordinator._update_from_state(older, "2026-09-17T20:01:05+00:00")
-        self.assertIs(self.coordinator.get_device_state(), newer)
-        details = self.coordinator.get_source_details()
-        self.assertEqual(details["mqtt_state"], "docked")
-        self.assertEqual(details["mqtt_received_at"], "2026-09-17T20:01:00+00:00")
-        count, latest = self.coordinator.get_rejected()
-        self.assertEqual(count, 1)
-        self.assertEqual(latest["reason"], "stale")
-        self.assertEqual(latest["topic"], "/downlink/vehicle/dev-1/realtimeDate/state")
-        self.assertEqual(json.loads(latest["payload"])["timestamp"], 1700000000)
+    async def test_a_state_message_keeps_the_sdks_receipt_time(self):
+        msg = mqtt_message()
+        msg.received_at = datetime(2026, 9, 17, 20, 0, 5, tzinfo=timezone.utc)
+        self.coordinator._handle_state(msg)
+        await asyncio.sleep(0)
+        self.assertEqual(
+            self.coordinator.get_source_details()["mqtt_received_at"], "2026-09-17T20:00:05+00:00"
+        )
 
-    async def test_equal_and_untimed_state_messages_apply(self):
-        first = mqtt_message(timestamp=1700000000)
-        same_time = mqtt_message(battery=79, timestamp=1700000000)
-        untimed = mqtt_message(battery=78, timestamp=None)
-        for msg in (first, same_time, untimed):
+    async def test_a_hand_built_state_message_is_stamped_on_receipt(self):
+        self.coordinator._handle_state(mqtt_message())  # received_at None
+        await asyncio.sleep(0)
+        self.assertIsNotNone(self.coordinator.get_source_details()["mqtt_received_at"])
+
+    async def test_every_delivered_state_message_applies(self):
+        # The SDK's filter has already kept late and implausible ones out.
+        for msg in (mqtt_message(timestamp=1700000060), mqtt_message(state="docked", timestamp=1700000000)):
             self.coordinator._update_from_state(msg)
             self.assertIs(self.coordinator.get_device_state(), msg)
         self.assertEqual(self.coordinator.get_rejected()[0], 0)
 
-    async def test_milliseconds_and_seconds_compare_alike(self):
-        self.coordinator._update_from_state(mqtt_message(timestamp=1700000060000))
-        self.coordinator._update_from_state(mqtt_message(state="docked", timestamp=1700000000))
-        self.assertEqual(self.coordinator.get_device_state().state, "mowing")
-        self.assertEqual(self.coordinator.get_rejected()[1]["reason"], "stale")
-
-    async def test_implausible_state_timestamp_is_rejected(self):
-        self.coordinator._update_from_state(mqtt_message(timestamp=86400))  # 1970
-        self.assertIsNone(self.coordinator.get_device_state())
-        self.assertEqual(self.coordinator.get_rejected()[1]["reason"], "implausible_time")
-
-    async def test_late_cached_message_is_not_adopted(self):
-        newer = mqtt_message(state="docked", raw="isDocked", timestamp=1700000060)
-        self.coordinator._update_from_state(newer)
-        self.sdk.get_cached_state.return_value = mqtt_message(timestamp=1700000000)
+    async def test_a_cached_message_keeps_the_sdks_receipt_time(self):
+        cached = mqtt_message()
+        cached.received_at = datetime(2026, 9, 17, 20, 0, 5, tzinfo=timezone.utc)
+        self.sdk.get_cached_state.return_value = cached
         self.mqtt_is_fresh()
         await self.coordinator._async_update_data()
-        self.assertIs(self.coordinator.get_device_state(), newer)
-        self.assertEqual(self.coordinator.get_data_source(), "mqtt_push")
+        self.assertEqual(
+            self.coordinator.get_source_details()["mqtt_received_at"], "2026-09-17T20:00:05+00:00"
+        )
+
+    async def test_a_new_cached_message_is_adopted_whatever_its_time(self):
+        self.coordinator._update_from_state(mqtt_message(state="docked", timestamp=1700000060))
+        cached = mqtt_message(timestamp=1700000000)
+        self.sdk.get_cached_state.return_value = cached
+        self.mqtt_is_fresh()
+        await self.coordinator._async_update_data()
+        self.assertIs(self.coordinator.get_device_state(), cached)
+        self.assertEqual(self.coordinator.get_data_source(), "mqtt_cache")
+
+    async def test_an_event_message_is_recorded_whole_and_changes_no_state(self):
+        event = DeviceEventMessage.from_dict({"device_id": "dev-1", "event": "bladeBlocked", "timestamp": 1})
+        self.coordinator._handle_event(event)
+        await asyncio.sleep(0)
+        count, latest = self.coordinator.get_rejected()
+        self.assertEqual(count, 1)
+        self.assertEqual((latest["channel"], latest["topic"], latest["reason"]), ("event", None, "unknown_channel"))
+        self.assertEqual(json.loads(latest["payload"]), {"device_id": "dev-1", "event": "bladeBlocked", "timestamp": 1})
+        self.assertIsNone(self.coordinator.get_device_state())
+        self.coordinator._handle_event(DeviceEventMessage.from_dict({"device_id": "dev-2", "event": "x"}))
+        await asyncio.sleep(0)
+        self.assertEqual(self.coordinator.get_rejected()[0], 1)
+
+    async def test_an_attributes_message_is_recorded_whole_and_applied(self):
+        attrs = DeviceAttributesMessage.from_dict({"device_id": "dev-1", "attributes": {"firmware": "1.2"}})
+        self.coordinator._handle_attributes(attrs)
+        await asyncio.sleep(0)
+        self.assertEqual(self.coordinator.get_rejected()[1]["channel"], "attributes")
+        self.assertIs(self.coordinator.get_device_attributes(), attrs)
 
     async def test_rest_poll_reply_is_kept_and_shown_only_when_mqtt_is_stale(self):
         self.coordinator.apply_rest_status(dict(REST_PAYLOAD), "2026-09-17T20:00:00+00:00")
@@ -368,21 +390,3 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(view["has_pose"])
         self.coordinator.ingest_location(decode(POSE)[0])
         self.assertTrue(self.coordinator.get_watch_view(time.monotonic())["has_pose"])
-
-    async def test_raw_state_check_catches_a_late_message_first(self):
-        newer = {"state": "isDocked", "timestamp": 1700000060000, "battery": 90}
-        older = {"state": "isRunning", "timestamp": 1700000000000, "battery": 91}
-        self.assertIsNone(self.coordinator.check_raw_state(newer))
-        # the older one arrives before the newer has reached the coordinator
-        self.assertEqual(self.coordinator.check_raw_state(older), "stale")
-        self.assertIsNone(self.coordinator.check_raw_state(dict(newer)))  # equal time
-        self.assertEqual(self.coordinator.check_raw_state({"timestamp": 5}), "implausible_time")
-        self.assertIsNone(self.coordinator.check_raw_state({"state": "isDocked"}))
-        self.assertIsNone(self.coordinator.check_raw_state([1]))
-
-    async def test_raw_check_and_the_backstop_agree_on_the_newer_message(self):
-        self.assertIsNone(self.coordinator.check_raw_state({"timestamp": 1700000060000}))
-        newer = mqtt_message(state="docked", timestamp=1700000060000)
-        self.coordinator._update_from_state(newer)
-        self.assertIs(self.coordinator.get_device_state(), newer)
-        self.assertEqual(self.coordinator.get_rejected()[0], 0)

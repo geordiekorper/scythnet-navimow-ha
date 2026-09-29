@@ -76,41 +76,9 @@ def rejection_record(
     }
 
 
-# The fields the state channel is known to carry (as in Scythnet; the SDK adds
-# device_id). A message with others still applies and is recorded as well.
-STATE_KNOWN_FIELDS = frozenset({
-    "state", "vehicleState", "status", "battery", "capacityRemaining",
-    "timestamp", "device_id",
-})
-
-
 # The fields a REST status reply is known to carry (as in Scythnet). Others
 # are shown under unknown_fields on the rest_status sensor.
 REST_KNOWN_FIELDS = frozenset({
     "id", "device_id", "deviceId", "vehicleState", "capacityRemaining",
     "descriptiveCapacityRemaining", "battery",
 })
-
-# Channels whose content reaches the entities. The SDK also parses `event`
-# and `attributes`, but nothing here uses an event, and attributes only
-# surface as an opaque attribute of the lawn-mower entity; both are recorded
-# whole so their content can be studied once a mower sends any.
-DECODED_CHANNELS = frozenset({"state", "location"})
-
-
-def raw_message_rejection(channel: str, text: str) -> str | None:
-    """Why a raw MQTT message on a non-location channel should also be
-    recorded as rejected input, or None when the decoders take all of it."""
-    if channel not in DECODED_CHANNELS:
-        return "unknown_channel"
-    if channel == "location":
-        return None  # the location parser judges its own messages
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return "unparsable"  # the SDK drops it before any callback
-    if not isinstance(data, dict):
-        return "unparsable"
-    if not set(data) <= STATE_KNOWN_FIELDS:
-        return "unknown_field"
-    return None

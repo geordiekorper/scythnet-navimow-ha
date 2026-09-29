@@ -7,6 +7,7 @@ entry's health shows once the SDK has run the hooks on the loop. Nothing
 connects: the broker name does not resolve and connect() is never called.
 """
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,7 +18,7 @@ from mower_sdk.sdk import NavimowSDK
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
 
-from custom_components.navimow import _attach_location_callbacks, _attach_mqtt_hooks
+from custom_components.navimow import _attach_message_callbacks, _attach_mqtt_hooks
 from custom_components.navimow.health import CollectorHealth
 
 DEVICE = SimpleNamespace(id="dev-1")
@@ -108,18 +109,19 @@ class HookWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.health.location_age("dev-1"))
 
 
-class LocationCallbackTest(unittest.IsolatedAsyncioTestCase):
-    """Location messages through the real SDK facade to the coordinator."""
+class MessageCallbackTest(unittest.IsolatedAsyncioTestCase):
+    """Location messages and rejections through the real SDK facade to the coordinator."""
 
     async def asyncSetUp(self):
         self.sdk = NavimowSDK(
             broker="wss://broker.example.invalid", port=443, ws_path="/mqtt/1",
             loop=asyncio.get_running_loop(), records=[], subscribe_location=True,
+            reject_late_state=True,
         )
         self.coordinator = SimpleNamespace(ingested=[], rejected=[])
         self.coordinator.ingest_location = self.coordinator.ingested.append
         self.coordinator.record_rejected = lambda *args: self.coordinator.rejected.append(args)
-        _attach_location_callbacks(self.sdk, {"dev-1": self.coordinator})
+        _attach_message_callbacks(self.sdk, {"dev-1": self.coordinator})
         self.client = self.sdk.mqtt.client
 
     async def deliver(self, device_id, channel, payload):
@@ -146,7 +148,48 @@ class LocationCallbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, payload.decode())
         self.assertEqual(set(reasons), {"implausible_time", "unknown_field"})
 
-    async def test_other_devices_and_other_channels_are_not_recorded_here(self):
+    async def test_another_devices_rejection_is_not_recorded_here(self):
         await self.deliver("dev-2", "location", b"not json")
-        await self.deliver("dev-1", "state", b"not json")
         self.assertEqual(self.coordinator.rejected, [])
+
+    async def test_a_late_state_message_is_recorded_with_its_reasons_and_not_applied(self):
+        applied = []
+        self.sdk.on_state(applied.append)
+        await self.deliver("dev-1", "state", b'{"state":"isDocked","timestamp":1700000060000}')
+        late = b'{"state":"isRunning","timestamp":1700000000000,"signal":-60}'
+        await self.deliver("dev-1", "state", late)
+        self.assertEqual([m.state for m in applied], ["docked"])
+        self.assertEqual(self.sdk.get_cached_state("dev-1").state, "docked")
+        ((channel, topic, reason, text, reasons),) = self.coordinator.rejected
+        self.assertEqual((channel, reason), ("state", "stale"))
+        self.assertEqual(topic, "/downlink/vehicle/dev-1/realtimeDate/state")
+        self.assertEqual(set(reasons), {"stale", "unknown_field"})
+        self.assertEqual(json.loads(text)["timestamp"], 1700000000000)
+
+    async def test_an_applied_state_with_an_unknown_field_is_recorded_once_as_received(self):
+        applied = []
+        self.sdk.on_state(applied.append)
+        await self.deliver("dev-1", "state", b'{"state":"isRunning","timestamp":1700000000000,"signal":-60}')
+        self.assertEqual([m.state for m in applied], ["mowing"])
+        self.assertEqual(self.sdk.get_cached_state("dev-1").state, "mowing")
+        ((channel, _, reason, text, reasons),) = self.coordinator.rejected
+        self.assertEqual((channel, reason, reasons), ("state", "unknown_field", ["unknown_field"]))
+        self.assertEqual(json.loads(text), {
+            "state": "isRunning", "timestamp": 1700000000000, "signal": -60, "device_id": "dev-1",
+        })
+
+    async def test_a_state_whose_fields_cannot_be_read_is_recorded(self):
+        applied = []
+        self.sdk.on_state(applied.append)
+        await self.deliver("dev-1", "state", b'{"state":"isRunning","metrics":1}')
+        self.assertEqual(applied, [])
+        ((channel, _, reason, _, reasons),) = self.coordinator.rejected
+        self.assertEqual((channel, reason, set(reasons)), ("state", "unparsable", {"unparsable", "unknown_field"}))
+
+    async def test_an_unparsable_state_or_event_message_is_recorded(self):
+        await self.deliver("dev-1", "state", b"not json")
+        await self.deliver("dev-1", "event", b"[1]")
+        self.assertEqual(
+            [(c, r) for c, _, r, _, _ in self.coordinator.rejected],
+            [("state", "unparsable"), ("event", "unparsable")],
+        )

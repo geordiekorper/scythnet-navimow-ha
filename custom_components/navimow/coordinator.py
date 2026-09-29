@@ -15,6 +15,7 @@ from mower_sdk.api import MowerAPI
 from mower_sdk.models import (
     Device,
     DeviceAttributesMessage,
+    DeviceEventMessage,
     DeviceLocation,
     DeviceLocationMessage,
     DeviceStateMessage,
@@ -30,10 +31,7 @@ from .const import (
 )
 from .location import (
     DOCKED_STATES,
-    mower_time_ms,
-    plausible_time,
     update_dock_estimate,
-    vehicle_topic,
 )
 from .rejected import REST_KNOWN_FIELDS, rejection_record
 
@@ -87,10 +85,6 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt_state: DeviceStateMessage | None = None
         self._mqtt_received_at: str | None = None
         self._mqtt_received_monotonic: float | None = None
-        # Mower time (ms) of the newest MQTT state message applied: the
-        # broker delivers late and out of order, and an older message must
-        # not become the current state.
-        self._mqtt_state_time_ms: int | None = None
         self._rest_status: DeviceStatus | None = None
         self._rest_raw: dict[str, Any] | None = None  # the reply as sent
         self._rest_polled_at: str | None = None
@@ -109,6 +103,7 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_setup(self) -> None:
         """Register callbacks from SDK."""
         self.sdk.on_state(self._handle_state)
+        self.sdk.on_event(self._handle_event)
         self.sdk.on_attributes(self._handle_attributes)
 
     def _build_data(self) -> dict[str, Any]:
@@ -195,12 +190,11 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if (
             cached_state is not None
             and cached_state is not self._mqtt_state
-            and self._state_rejection(cached_state) is None
         ):
             # A message the callback did not deliver (it arrived before the
             # callback was registered). Adopt it once; later polls that find
-            # the same object leave the state and its source label alone. A
-            # late one was already recorded when the callback saw it.
+            # the same object leave the state and its source label alone. The
+            # SDK's late-state filter keeps a late message out of its cache.
             self._adopt_mqtt_state(cached_state, "mqtt_cache")
 
         cached_attrs = self.sdk.get_cached_attributes(self.device.id)
@@ -310,9 +304,15 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             state.battery,
         )
         self._last_mqtt_update = time.monotonic()
-        received_at = dt_util.utcnow().isoformat()
+        self.hass.loop.call_soon_threadsafe(self._update_from_state, state)
+
+    def _handle_event(self, event: DeviceEventMessage) -> None:
+        if event.device_id != self.device.id:
+            return
+        # Nothing here uses the event channel: kept whole as rejected input,
+        # so its content can be studied once a mower sends any.
         self.hass.loop.call_soon_threadsafe(
-            self._update_from_state, state, received_at
+            self.record_rejected, "event", None, "unknown_channel", event.raw
         )
 
     def _handle_attributes(self, attrs: DeviceAttributesMessage) -> None:
@@ -324,64 +324,35 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             len(getattr(attrs, "__dict__", {}) or {}),
         )
         self._last_mqtt_update = time.monotonic()
+        # Attributes surface only as an opaque attribute of the lawn mower;
+        # kept whole as rejected input as well.
+        self.hass.loop.call_soon_threadsafe(
+            self.record_rejected, "attributes", None, "unknown_channel", attrs.raw
+        )
         self.hass.loop.call_soon_threadsafe(self._update_from_attributes, attrs)
 
     def _update_from_state(
         self, state: DeviceStateMessage, received_at: str | None = None
     ) -> None:
-        reason = self._state_rejection(state)
-        if reason is not None:
-            self.record_rejected(
-                "state", vehicle_topic(self.device.id, "state"), reason, state.to_dict()
-            )
-            return
+        """Apply a state message the SDK delivered; its late-state filter has
+        already kept out a late or implausibly stamped one."""
         self._adopt_mqtt_state(state, "mqtt_push", received_at)
         self.async_set_updated_data(self._build_data())
-
-    def _state_rejection(self, state: DeviceStateMessage) -> str | None:
-        """Why an MQTT state message must not become the current state, or
-        None. A message without a timestamp is applied as it arrives."""
-        return self._stamp_rejection(mower_time_ms(state.timestamp))
-
-    def _stamp_rejection(self, stamp: int | None) -> str | None:
-        if stamp is None:
-            return None
-        if not plausible_time(stamp, round(time.time() * 1000)):
-            return "implausible_time"
-        if self._mqtt_state_time_ms is not None and stamp < self._mqtt_state_time_ms:
-            return "stale"
-        return None
-
-    def check_raw_state(self, data: Any) -> str | None:
-        """Judge a raw state message before the SDK sees it (MQTT hook).
-
-        Returns why it must not be applied, or None; an accepted message
-        advances the mark at once, so a late one arriving before this one
-        reaches the coordinator is still caught here, where the payload
-        can be recorded as received.
-        """
-        if not isinstance(data, dict):
-            return None
-        stamp = mower_time_ms(data.get("timestamp"))
-        reason = self._stamp_rejection(stamp)
-        if reason is None and stamp is not None:
-            self._mqtt_state_time_ms = max(stamp, self._mqtt_state_time_ms or stamp)
-        return reason
 
     def _adopt_mqtt_state(
         self, state: DeviceStateMessage, source: str, received_at: str | None = None
     ) -> None:
         """Make an MQTT state message the current device state.
 
-        ``received_at`` is when HA received the message; for a message found
-        in the SDK cache it is the poll that found it.
+        ``received_at`` overrides the receipt time; otherwise it is the one
+        the SDK stamped on the message, and for a message built by hand (no
+        stamp) the time it is adopted.
         """
         self._mqtt_state = state
+        if received_at is None and state.received_at is not None:
+            received_at = state.received_at.isoformat()
         self._mqtt_received_at = received_at or dt_util.utcnow().isoformat()
         self._mqtt_received_monotonic = time.monotonic()
-        stamp = mower_time_ms(state.timestamp)
-        if stamp is not None:
-            self._mqtt_state_time_ms = max(stamp, self._mqtt_state_time_ms or stamp)
         self._last_state = state
         self._last_data_source = source
 

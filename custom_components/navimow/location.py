@@ -18,12 +18,6 @@ from typing import Any
 from mower_sdk.models import DeviceLocation
 
 
-def vehicle_topic(device_id: str, channel: str) -> str:
-    """Cloud MQTT topic of one of a device's channels (state, event,
-    attributes, location)."""
-    return f"/downlink/vehicle/{device_id}/realtimeDate/{channel}"
-
-
 def _num(value: Any) -> float | None:
     """Vendor number (often sent as a string such as "100.00") as float, else None."""
     if isinstance(value, bool):
@@ -206,24 +200,3 @@ def target_zone(location: DeviceLocation | None, activity: str | None) -> int | 
     if (activity or "").lower() in MOW_ALL_ACTIVITIES:
         return TARGET_ALL
     return TARGET_NONE
-
-
-# Event times outside this window are not believed: before 2020, or more than
-# five minutes after receipt (two target reports have arrived stamped January
-# 1970). Such an entry changes nothing and is recorded as rejected input.
-PLAUSIBLE_MIN_MS = 1_577_836_800_000  # 2020-01-01T00:00:00Z
-TIME_AHEAD_MAX_MS = 5 * 60 * 1000
-
-
-def plausible_time(event_ms: int, now_ms: int) -> bool:
-    """Whether an event time can be believed (both ends included)."""
-    return PLAUSIBLE_MIN_MS <= event_ms <= now_ms + TIME_AHEAD_MAX_MS
-
-
-def mower_time_ms(value: Any) -> int | None:
-    """A mower timestamp as epoch milliseconds, whether sent in seconds or
-    milliseconds; None when absent or not a positive number."""
-    number = _int(value)
-    if number is None or number <= 0:
-        return None
-    return number if number > 100_000_000_000 else number * 1000

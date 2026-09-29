@@ -1,6 +1,5 @@
 """The Navimow integration."""
 import asyncio
-import json
 from collections.abc import Awaitable, Callable
 import logging
 from typing import Any
@@ -43,7 +42,6 @@ from .const import (
 if sdk_check.PROBLEM is None:
     from .coordinator import NavimowCoordinator
     from .services import async_setup_services, async_unload_services
-    from .rejected import raw_message_rejection
     from .health import CollectorHealth, device_id_from_topic
     from .rest_poll import RestPoller
     from .session import MqttSession
@@ -142,9 +140,10 @@ def _attach_mqtt_hooks(
     sdk.on_raw(_on_raw)
 
 
-def _attach_location_callbacks(sdk: NavimowSDK, coordinators: dict[str, Any]) -> None:
-    """Hand the SDK's decoded location entries and its location rejections to
-    the device's coordinator (``coordinators`` may be filled later)."""
+def _attach_message_callbacks(sdk: NavimowSDK, coordinators: dict[str, Any]) -> None:
+    """Hand the SDK's decoded location entries, and every message it did not
+    apply or applied with something unknown in it, to the device's
+    coordinator (``coordinators`` may be filled later)."""
 
     @callback
     def _on_location(message: Any) -> None:
@@ -155,14 +154,14 @@ def _attach_location_callbacks(sdk: NavimowSDK, coordinators: dict[str, Any]) ->
 
     @callback
     def _on_rejected(message: Any) -> None:
-        # The state channel's rejections are still judged by the entry's
-        # on_message wrapper.
-        if message.channel != "location":
-            return
+        # Any channel: a late, implausibly stamped or unparsable state
+        # message, a state field nobody knows, a malformed event or
+        # attributes payload, a location entry the decoder refused. Recorded
+        # with the payload as the SDK received it, once per message.
         coordinator = coordinators.get(message.device_id)
         if coordinator is not None:
             coordinator.record_rejected(
-                "location", message.topic, message.reason,
+                message.channel, message.topic, message.reason,
                 message.payload.decode("utf-8", "replace"), list(message.reasons),
             )
 
@@ -284,58 +283,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Bearer <masked>" if auth_headers else "<none>",
         )
 
-        # device id -> coordinator, for the SDK's callbacks.
-        _location_coordinators: dict[str, Any] = {}
+        # device id -> coordinator, filled below; the SDK's callbacks read it.
+        coordinators: dict[str, NavimowCoordinator] = {}
         _mqtt_refresh_lock = asyncio.Lock()
         # 用列表作为可变标志容器，使 async_unload_entry（不同函数作用域）可以修改它
         _unload_flag: list[bool] = [False]
-
-        def _wrap_on_message(sdk: NavimowSDK) -> None:
-            mqtt = sdk.mqtt
-            original_on_message = mqtt.on_message
-
-            async def _on_message(topic: str, payload: bytes, device_id: str) -> None:
-                payload_text = (payload or b"").decode("utf-8", errors="replace")
-                _LOGGER.debug(
-                    "MQTT message received: topic=%s bytes=%d device=%s payload=%s",
-                    topic,
-                    len(payload or b""),
-                    device_id,
-                    payload_text,
-                )
-                if device_id and topic.endswith("/realtimeDate/location"):
-                    # The SDK decodes it (on_location) and judges it (on_rejected).
-                    if original_on_message is not None:
-                        await original_on_message(topic, payload, device_id)
-                    return
-                # The SDK decodes the other channels, but only the fields it
-                # knows, and nothing here uses the event or attributes
-                # channels; record what would otherwise be lost.
-                _coord = _location_coordinators.get(device_id)
-                _channel = topic.rsplit("/", 1)[-1]
-                _reason = raw_message_rejection(_channel, payload_text)
-                if _channel == "state" and _coord is not None:
-                    try:
-                        _stamp_reason = _coord.check_raw_state(json.loads(payload_text))
-                    except ValueError:
-                        _stamp_reason = None
-                    if _stamp_reason is not None:
-                        # Late or implausibly stamped: recorded as received,
-                        # and never handed to the SDK, so it cannot become
-                        # the current state or the SDK's cached one.
-                        _coord.record_rejected(
-                            _channel, topic, _stamp_reason, payload_text,
-                            [_stamp_reason] + ([_reason] if _reason else []),
-                        )
-                        return
-                if _reason is not None and _coord is not None:
-                    hass.loop.call_soon_threadsafe(
-                        _coord.record_rejected, _channel, topic, _reason, payload_text
-                    )
-                if original_on_message is not None:
-                    await original_on_message(topic, payload, device_id)
-
-            mqtt.on_message = _on_message
 
         async def _probe_mqtt_status(sdk: NavimowSDK) -> None:
             await asyncio.sleep(5)
@@ -357,6 +309,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 reconnect_min_delay=1,
                 reconnect_max_delay=60,
                 subscribe_location=True,
+                # Late or implausibly stamped state messages are reported
+                # (on_rejected) and never applied or cached.
+                reject_late_state=True,
             )
             return sdk
 
@@ -368,10 +323,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, sdk, api, oauth_session, health, _unload_flag, _mqtt_refresh_lock, access_token
         )
         _attach_mqtt_hooks(sdk, health, devices, session.async_refresh_credentials)
-        _wrap_on_message(sdk)
-        _attach_location_callbacks(sdk, _location_coordinators)
+        _attach_message_callbacks(sdk, coordinators)
 
-        coordinators: dict[str, NavimowCoordinator] = {}
         for device in devices:
             coordinator = NavimowCoordinator(
                 hass=hass,
@@ -386,7 +339,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await coordinator.async_setup()
             await coordinator.async_config_entry_first_refresh()
             coordinators[device.id] = coordinator
-            _location_coordinators[device.id] = coordinator
 
         # Steady REST status poll for all of this entry's mowers, independent
         # of MQTT health (the coordinators' own fetch is only a fallback).
