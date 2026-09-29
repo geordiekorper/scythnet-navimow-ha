@@ -93,6 +93,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # health.py), set by async_setup_entry.
         self.rest_poller: Any = None
         self.health: Any = None
+        # The entry's MQTT session (session.py), set by async_setup_entry:
+        # every token check pushes the bearer to it.
+        self.mqtt_session: Any = None
         # Input received but not applied (rejected.py): a running count since
         # start-up and the latest item.
         self._rejected_count = 0
@@ -168,6 +171,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.api.set_token(access_token)
         if self.health is not None:
             self.health.note_token(token.get("expires_at"))
+        if self.mqtt_session is not None:
+            # The WebSocket upgrade carries the bearer: the client's next
+            # connect must use the current token.
+            await self.mqtt_session.async_push_bearer(access_token)
         return access_token
 
     async def _async_update_data(self) -> dict[str, Any]:

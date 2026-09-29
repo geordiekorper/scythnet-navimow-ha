@@ -31,12 +31,12 @@ class HookWiringTest(unittest.IsolatedAsyncioTestCase):
             loop=asyncio.get_running_loop(), records=[],
         )
         self.health = CollectorHealth(self.sdk.mqtt)
-        self.disconnects_seen = []
+        self.refreshes = []
 
-        async def after_disconnect():
-            self.disconnects_seen.append(self.health.connected)
+        async def on_connect_fail():
+            self.refreshes.append(self.health.connect_failures)
 
-        _attach_mqtt_hooks(self.sdk, self.health, [DEVICE], after_disconnect)
+        _attach_mqtt_hooks(self.sdk, self.health, [DEVICE], on_connect_fail)
         self.client = self.sdk.mqtt.client
 
     async def settle(self):
@@ -60,8 +60,9 @@ class HookWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Not authorized", self.health.connect_fail_reason)
         self.assertIsNotNone(self.health.connect_failed_at)
         self.assertEqual(self.health.status, "disconnected")
+        self.assertEqual(self.refreshes, [1])  # the credential refresh runs after it
 
-    async def test_a_disconnect_is_reported_and_then_handed_on(self):
+    async def test_a_disconnect_is_reported_and_starts_no_refresh(self):
         self.client.on_connect(self.client, None, {}, ReasonCode(PacketTypes.CONNACK, "Success"), None)
         await self.settle()
         self.client.on_disconnect(
@@ -71,13 +72,14 @@ class HookWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.health.connected)
         self.assertEqual(self.health.disconnects, 1)
         self.assertEqual(self.health.disconnect_reason, "Unspecified error")
-        self.assertEqual(self.disconnects_seen, [False])  # after the health was noted
+        self.assertEqual(self.refreshes, [])  # paho reconnects with the stored values
 
     async def test_no_connack_at_all_is_a_failure(self):
         self.client.on_connect_fail(self.client, None)
         await self.settle()
         self.assertEqual(self.health.connect_failures, 1)
         self.assertEqual(self.health.connect_fail_reason, "connection failed before CONNACK")
+        self.assertEqual(self.refreshes, [1])
 
     async def test_a_rebuilt_client_reports_too(self):
         # rebuild() connects the new client: keep paho off the network.

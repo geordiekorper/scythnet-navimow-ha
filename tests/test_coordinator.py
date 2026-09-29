@@ -319,6 +319,15 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         await self.coordinator._async_ensure_valid_token()
         self.coordinator.health.note_token.assert_called_once_with(1700000000)
 
+    async def test_every_token_check_pushes_the_bearer_to_the_mqtt_session(self):
+        self.coordinator.oauth_session = SimpleNamespace(
+            token={"access_token": "t", "expires_at": 1700000000},
+            async_ensure_token_valid=AsyncMock(),
+        )
+        self.coordinator.mqtt_session = SimpleNamespace(async_push_bearer=AsyncMock())
+        self.assertEqual(await self.coordinator._async_ensure_valid_token(), "t")
+        self.coordinator.mqtt_session.async_push_bearer.assert_awaited_once_with("t")
+
     async def test_watch_view_pairs_the_last_mqtt_report_with_rest(self):
         view = self.coordinator.get_watch_view(time.monotonic())
         self.assertEqual((view["mqtt_state"], view["rest_state"], view["mqtt_age"]), (None, None, None))

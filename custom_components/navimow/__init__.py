@@ -49,6 +49,7 @@ if sdk_check.PROBLEM is None:
     from .rejected import raw_message_rejection
     from .health import CollectorHealth, device_id_from_topic
     from .rest_poll import RestPoller
+    from .session import MqttSession
     from .watchdog import MqttWatchdog
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,14 +80,16 @@ def _attach_mqtt_hooks(
     sdk: NavimowSDK,
     health: "CollectorHealth",
     devices: list[Any],
-    after_disconnect: Callable[[], Awaitable[None]] | None = None,
+    on_connect_fail: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Report the SDK client's connection events to ``health``.
 
     The client runs these hooks on the event loop, after it has counted the
     event and recorded its reason (health reads both from the client), for
     every paho client it builds, rebuilt ones included. Attach them before
-    connecting, so no event is missed.
+    connecting, so no event is missed. ``on_connect_fail`` runs after a
+    refused connection (the broker credentials refresh); a disconnect only
+    changes the health, since paho reconnects with the stored credentials.
     """
     mqtt = sdk.mqtt
 
@@ -125,14 +128,14 @@ def _attach_mqtt_hooks(
             mqtt.client_id,
             mqtt.last_disconnect_reason,
         )
-        if after_disconnect is not None:
-            await after_disconnect()
 
     async def _on_connect_fail(reason: str) -> None:
         # A refused CONNACK, or no CONNACK at all (a network failure, or the
         # bearer token refused at the WebSocket upgrade); paho keeps retrying.
         health.note_connect_failed()
         _LOGGER.debug("MQTT connect failed: %s", reason)
+        if on_connect_fail is not None:
+            await on_connect_fail()
 
     @callback
     def _on_raw(topic: str, _payload: bytes) -> None:
@@ -297,21 +300,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # 用列表作为可变标志容器，使 async_unload_entry（不同函数作用域）可以修改它
         _unload_flag: list[bool] = [False]
 
-        async def _after_disconnect() -> None:
-            if _unload_flag[0]:
-                return
-            # 若已有刷新在进行中，跳过本次——broker 批量断连会并发触发多次回调，
-            # 只需执行一次凭据刷新即可，重复执行会导致 paho client 孤儿累积。
-            if _mqtt_refresh_lock.locked():
-                _LOGGER.debug("MQTT credential refresh already in progress, skipping duplicate disconnect callback")
-                return
-            async with _mqtt_refresh_lock:
-                if _unload_flag[0]:
-                    return
-                # 断连后重新从服务端拉取 MQTT 凭据（userName/pwdInfo 与 OAuth token 绑定，
-                # token 刷新或过期后凭据会失效，直接用旧凭据重连会导致 CODE_OAUTH_INFO_ILLEGAL）
-                await _async_refresh_mqtt_credentials(sdk, api)
-
         def _wrap_on_message(sdk: NavimowSDK) -> None:
             mqtt = sdk.mqtt
             original_on_message = mqtt.on_message
@@ -361,126 +349,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             mqtt.on_message = _on_message
 
-            def _on_subscribe(_client, _userdata, mid, granted_qos, *args, **kwargs):
-                _LOGGER.info(
-                    "MQTT subscribed: mid=%s granted_qos=%s broker=%s port=%s client_id=%s",
-                    mid,
-                    granted_qos,
-                    mqtt.broker,
-                    mqtt.port,
-                    mqtt.client_id,
-                )
-
-            def _on_log(_client, _userdata, level, buf):
-                _LOGGER.debug("MQTT client log: level=%s msg=%s", level, buf)
-
-            mqtt.client.on_subscribe = _on_subscribe
-            mqtt.client.on_log = _on_log
-
         async def _probe_mqtt_status(sdk: NavimowSDK) -> None:
             await asyncio.sleep(5)
             _LOGGER.info("MQTT status probe (5s): connected=%s", sdk.is_connected)
             await asyncio.sleep(25)
             _LOGGER.info("MQTT status probe (30s): connected=%s", sdk.is_connected)
-
-        async def _async_fetch_mqtt_credentials(
-            api: MowerAPI,
-        ) -> tuple[dict[str, str] | None, str | None, str | None] | None:
-            """Refresh the OAuth token, then fetch broker credentials for it.
-
-            服务端下发的 userName/pwdInfo 与 OAuth token 绑定，token 刷新后需同步更新，
-            否则 MQTT 重连时会收到 CODE_OAUTH_INFO_ILLEGAL。
-
-            必须先刷新 OAuth token：MQTT 断连往往正是因为 token 过期触发的，
-            此时 api._token 极可能也已失效，需先换新 token 再拉取 MQTT 凭据。
-
-            Returns (auth_headers, username, password), any of them None when
-            not renewed, or None when the broker credentials could not be had.
-            """
-            new_auth_headers: dict[str, str] | None = None
-            try:
-                # 先刷新 OAuth token（oauth_session 来自外层闭包）
-                if hasattr(oauth_session, "async_ensure_token_valid"):
-                    await oauth_session.async_ensure_token_valid()
-                    fresh_token = oauth_session.token
-                elif hasattr(oauth_session, "async_get_valid_token"):
-                    fresh_token = await oauth_session.async_get_valid_token()
-                else:
-                    fresh_token = oauth_session.token
-
-                if fresh_token and fresh_token.get("access_token"):
-                    new_access_token = fresh_token["access_token"]
-                    api.set_token(new_access_token)
-                    new_auth_headers = {"Authorization": f"Bearer {new_access_token}"}
-            except Exception as err:
-                _LOGGER.warning("Failed to refresh OAuth token before MQTT credential refresh: %s", err)
-
-            try:
-                new_mqtt_info = await api.async_get_mqtt_user_info()
-            except Exception as err:
-                _LOGGER.warning("Failed to refresh MQTT credentials: %s", err)
-                return None
-            return new_auth_headers, new_mqtt_info.get("userName"), new_mqtt_info.get("pwdInfo")
-
-        async def _async_refresh_mqtt_credentials(sdk: NavimowSDK, api: MowerAPI) -> None:
-            """Token 过期或 MQTT 断连后，重新获取 MQTT 凭据并更新 SDK。"""
-            credentials = await _async_fetch_mqtt_credentials(api)
-            if credentials is None or _unload_flag[0]:
-                return  # the entry may have unloaded during the fetch
-            new_auth_headers, new_username, new_password = credentials
-            if new_auth_headers or new_username or new_password:
-                # update_credentials 在断连时会调用 loop_stop()/tls_set()/load_default_certs()
-                # 等阻塞 SSL 操作，必须在 executor 中执行，避免阻塞 HA 事件循环。
-                # auth_headers 更新与 username/password 更新合并为一次 executor 调用。
-                def _do_credential_update() -> None:
-                    if _unload_flag[0]:
-                        return
-                    sdk.update_mqtt_credentials(
-                        auth_headers=new_auth_headers,
-                        username=new_username,
-                        password=new_password,
-                    )
-                await hass.async_add_executor_job(_do_credential_update)
-                health.note_credential_refresh()
-                health.note_rebuild()  # changed values rebuild a disconnected client
-                _LOGGER.info(
-                    "MQTT credentials refreshed from server: username=%s",
-                    _mask_secret(new_username),
-                )
-
-        async def _async_rebuild_mqtt(reason: str) -> None:
-            """Replace the MQTT client and connect afresh, on purpose.
-
-            For a link that died silently: the client still believes it is
-            connected, so paho never reconnects it. Holds the
-            credential-refresh lock, so the disconnect this causes does not
-            start a second refresh.
-            """
-            if _unload_flag[0] or _mqtt_refresh_lock.locked():
-                return
-            async with _mqtt_refresh_lock:
-                if _unload_flag[0]:
-                    return
-                _LOGGER.warning("Rebuilding the MQTT connection: %s", reason)
-                credentials = await _async_fetch_mqtt_credentials(api)
-                if _unload_flag[0]:
-                    return  # unloaded during the fetch: start nothing
-                # None keeps the client's stored value.
-                auth_headers, username, password = credentials or (None, None, None)
-
-                def _do_rebuild() -> None:
-                    if _unload_flag[0]:
-                        return
-                    sdk.mqtt.rebuild(
-                        username=username or None,
-                        password=password or None,
-                        auth_headers=auth_headers or None,
-                        reason=reason,
-                    )
-
-                # paho's teardown and TLS setup block; keep them off the loop.
-                await hass.async_add_executor_job(_do_rebuild)
-                health.note_rebuild()
 
         def _create_sdk(api: MowerAPI) -> NavimowSDK:
             sdk = NavimowSDK(
@@ -498,22 +371,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return sdk
 
-        def _connect(sdk: NavimowSDK) -> None:
-            _LOGGER.info(
-                "Invoking SDK MQTT connect: broker=%s port=%s ws_path=%s",
-                mqtt_host,
-                mqtt_port,
-                ws_path,
-            )
-            sdk.connect()
-
         # Built without connecting (building sets up TLS, which blocks), so
         # the hooks are in place before the first event.
         sdk = await hass.async_add_executor_job(_create_sdk, api)
         health = CollectorHealth(sdk.mqtt)
-        _attach_mqtt_hooks(sdk, health, devices, _after_disconnect)
+        session = MqttSession(
+            hass, sdk, api, oauth_session, health, _unload_flag, _mqtt_refresh_lock, access_token
+        )
+        _attach_mqtt_hooks(sdk, health, devices, session.async_refresh_credentials)
         _wrap_on_message(sdk)
-        await hass.async_add_executor_job(_connect, sdk)
+        _LOGGER.info(
+            "Invoking SDK MQTT connect: broker=%s port=%s ws_path=%s",
+            mqtt_host,
+            mqtt_port,
+            ws_path,
+        )
+        await session.start()
         hass.async_create_task(_probe_mqtt_status(sdk))
 
         coordinators: dict[str, NavimowCoordinator] = {}
@@ -528,6 +401,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 location_cache=_location_cache,
             )
             coordinator.health = health
+            coordinator.mqtt_session = session
             await coordinator.async_setup()
             await coordinator.async_config_entry_first_refresh()
             coordinators[device.id] = coordinator
@@ -544,7 +418,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 first._async_ensure_valid_token,
             )
             health.poller = rest_poller
-            watchdog = MqttWatchdog(hass, health, coordinators, _async_rebuild_mqtt)
+            watchdog = MqttWatchdog(hass, health, coordinators, session.async_rebuild)
 
             @callback
             def _on_poll_result(ok: bool) -> None:
@@ -565,6 +439,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][entry.entry_id] = {
             "rest_poller": rest_poller,
             "health": health,
+            "session": session,
             "sdk": sdk,
             "api": api,
             "devices": devices,
