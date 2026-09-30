@@ -5,6 +5,57 @@
 > and the original [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
 > Fork releases are listed first; upstream history follows.
 
+## 1.3.0 in detail
+
+The integration now runs on the community edition of the Navimow SDK,
+[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community)
+0.2.0a3 or later, which does in the SDK much of what this fork did around the
+official one. No entity, entity id or attribute name changes.
+
+- **Requirement and start-up check.** Home Assistant installs
+  `navimow-sdk-community` at the first start after the update. It and the
+  upstream `navimow-sdk` both provide the `mower_sdk` package, and Home
+  Assistant never uninstalls a requirement, so both stay listed until the
+  container is recreated; the SDK logs a warning meanwhile. If the files on disk
+  are not the distribution the integration requires, it refuses to start with an
+  error naming the versions found, where the package was loaded from, and what
+  to remove (see Requirements in the README).
+- **Broker credentials.** The MQTT credentials are fetched again only after a
+  failed connection attempt (a refused connection, or one that failed before the
+  broker answered, as a stale token at the WebSocket upgrade does), at most once
+  a minute, instead of on every disconnect; after each OAuth token refresh the new token goes to the MQTT
+  connection without dropping it. A watchdog rebuild replaces the MQTT client
+  through the SDK, which counts it.
+- **Zone sensor.** `sensor.<mower>_zone` now distinguishes the mower's empty
+  target reports: `all` while it mows or pauses with no named zone (a "mow all"
+  task), `none` when it reports no target and is not mowing, and `unknown` only
+  until the first target report. Previously all three read `unknown`. `all` is
+  inferred from the mower's activity, since the mower sends the same empty report
+  in both cases; a charging break during a mow-all reads `none` until the mower
+  resumes. Templates that compared the zone state to `unknown` should compare to
+  `none` or `all`; the `partition_ids` attribute is unchanged, so the gate example
+  needed no change beyond showing "All zones" in its friendly-name sensor.
+- **Location and state from the SDK.** The SDK decodes the location channel and
+  filters late or implausibly stamped state messages; what it refuses is still
+  recorded on `rejected_input`. Two small differences: a location entry whose
+  time is 0, negative or unreadable is now rejected (it was applied as untimed),
+  and the `mowing_zone` sensor's `route_progress` attribute is the last route
+  reading reported, where it was the latest task entry's own (empty when that
+  entry did not carry one). After a restart, a zone sensor that had recorded
+  `unknown` stays `unknown` instead of reading `all` or `none`.
+- **Three more states.** A mower editing its map or installing a software update
+  shows as docked (it showed as mowing or paused) and one the cloud reports
+  offline shows an error; the `status` attribute and the sensors carry the exact
+  state (`mapping`, `updating`, `offline`). The connection watchdog no longer
+  rebuilds the MQTT connection every five minutes while a mower edits its map.
+- **Battery and device information.** A battery reading the cloud sends empty or
+  unreadable now shows as unknown instead of a false 0 %, and the remaining
+  capacity is preferred where both are sent. The device's firmware, model and
+  serial number are also read from the other key spellings the cloud uses.
+- **Commands.** A command whose reply was lost, or came back as a server error or
+  an unreadable reply, is reported `unconfirmed` (it may still have acted);
+  refused credentials start reauthentication.
+
 ## [1.2.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.1.0...NavimowHA-v1.2.0) (2026-09-18)
 
 
@@ -28,60 +79,6 @@
 * unknown progress without a task report; keep delay on status-only entries ([7609893](https://github.com/geordiekorper/scythnet-navimow-ha/commit/7609893cba05842ee9d38d4e891f5782eb560d3b))
 * use entity targets and shared handling for mower commands ([6f8bbe0](https://github.com/geordiekorper/scythnet-navimow-ha/commit/6f8bbe0d53da42ecda6311a45bf00c260a584980))
 * zone display, mow_progress %, in_transit threshold, MQTT hook race ([1380b02](https://github.com/geordiekorper/scythnet-navimow-ha/commit/1380b02257c1489215df2335851e0cf851a3016f))
-
-## Unreleased
-
-- `sensor.<mower>_zone` now distinguishes the mower's empty target reports: `all`
-  while it mows or pauses with no named zone (a "mow all" task), `none` when it
-  reports no target and is not mowing, and `unknown` only until the first target
-  report. Previously all three read `unknown`. `all` is inferred from the mower's
-  activity, since the mower sends the same empty report in both cases; a charging
-  break during a mow-all reads `none` until the mower resumes. Templates that
-  compared the zone state to `unknown` should compare to `none` or `all`; the
-  `partition_ids` attribute is unchanged, so the gate example needed no change
-  beyond showing "All zones" in its friendly-name sensor.
-
-## 1.3.0 in detail
-
-The integration now runs on the community edition of the Navimow SDK,
-[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community)
-0.2.0a3 or later, which does in the SDK much of what this fork did around the
-official one. No entity, entity id or attribute name changes.
-
-- **Requirement and start-up check.** Home Assistant installs
-  `navimow-sdk-community` at the first start after the update. It and the
-  upstream `navimow-sdk` both provide the `mower_sdk` package, and Home
-  Assistant never uninstalls a requirement, so both stay listed until the
-  container is recreated; the SDK logs a warning meanwhile. If the files on disk
-  are not the distribution the integration requires, it refuses to start with an
-  error naming the versions found, where the package was loaded from, and what
-  to remove (see Requirements in the README).
-- **Broker credentials.** The MQTT credentials are fetched again only after a
-  failed connection attempt (a refused connection, or one that failed before the
-  broker answered, as a stale token at the WebSocket upgrade does), at most once
-  a minute, instead of on every disconnect; after each OAuth token refresh the new token goes to the MQTT
-  connection without dropping it. A watchdog rebuild replaces the MQTT client
-  through the SDK, which counts it.
-- **Location and state from the SDK.** The SDK decodes the location channel and
-  filters late or implausibly stamped state messages; what it refuses is still
-  recorded on `rejected_input`. Two small differences: a location entry whose
-  time is 0, negative or unreadable is now rejected (it was applied as untimed),
-  and the `mowing_zone` sensor's `route_progress` attribute is the last route
-  reading reported, where it was the latest task entry's own (empty when that
-  entry did not carry one). After a restart, a zone sensor that had recorded
-  `unknown` stays `unknown` instead of reading `all` or `none`.
-- **Three more states.** A mower editing its map or installing a software update
-  shows as docked (it showed as mowing or paused) and one the cloud reports
-  offline shows an error; the `status` attribute and the sensors carry the exact
-  state (`mapping`, `updating`, `offline`). The connection watchdog no longer
-  rebuilds the MQTT connection every five minutes while a mower edits its map.
-- **Battery and device information.** A battery reading the cloud sends empty or
-  unreadable now shows as unknown instead of a false 0 %, and the remaining
-  capacity is preferred where both are sent. The device's firmware, model and
-  serial number are also read from the other key spellings the cloud uses.
-- **Commands.** A command whose reply was lost, or came back as a server error or
-  an unreadable reply, is reported `unconfirmed` (it may still have acted);
-  refused credentials start reauthentication.
 
 ## 1.2.0 in detail
 
@@ -208,7 +205,3 @@ The generated entry above lists the commits; this section describes what they me
 * **navimow:** improve MQTT reconnection handling and entity availability ([c04ae31](https://github.com/segwaynavimow/NavimowHA/commit/c04ae312f0685705215b8cfc31c1400d6c96a5e0))
 * **navimow:** Optimize re-authentication error handling, distinguishing between deterministic and transient failures ([cb2bd56](https://github.com/segwaynavimow/NavimowHA/commit/cb2bd56eea8be91a8cded3e76dd74c5a5a68301e))
 * **navimow:** Optimizes MQTT connection keepalive and reconnection mechanisms ([0f38417](https://github.com/segwaynavimow/NavimowHA/commit/0f384173283644e1a93798993e4152eaeb7f40b3))
-
-## Changelog
-
-所有版本变更将由自动化发布流程生成。

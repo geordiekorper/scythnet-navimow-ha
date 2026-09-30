@@ -184,14 +184,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return f"{value[:2]}***{value[-2:]}"
 
     try:
-        # 获取 OAuth2 实现
+        # Get the OAuth2 implementation
         implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(
             hass, entry
         )
         if not isinstance(implementation, NavimowOAuth2Implementation):
             raise ConfigEntryAuthFailed("Invalid OAuth2 implementation")
 
-        # 创建 OAuth2Session
+        # Create the OAuth2Session
         oauth_session = config_entry_oauth2_flow.OAuth2Session(
             hass, entry, implementation
         )
@@ -217,14 +217,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not access_token:
             raise ConfigEntryAuthFailed("No access token in token data")
 
-        # 创建 MowerAPI 实例
+        # Create the MowerAPI instance
         api = MowerAPI(
             session=async_get_clientsession(hass),
             token=access_token,
             base_url=entry.data.get("api_base_url", API_BASE_URL),
         )
 
-        # 发现设备
+        # Discover devices
         try:
             devices = await api.async_get_devices()
             _LOGGER.info("Discovered %d Navimow device(s)", len(devices))
@@ -240,7 +240,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not devices:
             _LOGGER.warning("No Navimow devices found")
 
-        # 获取 MQTT 连接信息并创建 SDK
+        # Get the MQTT connection info and create the SDK
         try:
             mqtt_info = await api.async_get_mqtt_user_info()
         except MowerAPIError as err:
@@ -285,7 +285,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # device id -> coordinator, filled below; the SDK's callbacks read it.
         coordinators: dict[str, NavimowCoordinator] = {}
         _mqtt_refresh_lock = asyncio.Lock()
-        # 用列表作为可变标志容器，使 async_unload_entry（不同函数作用域）可以修改它
+        # A one-element list works as a mutable flag so that async_unload_entry
+        # (a different function scope) can set it.
         _unload_flag: list[bool] = [False]
 
         async def _probe_mqtt_status(sdk: NavimowSDK) -> None:
@@ -366,7 +367,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.async_on_unload(rest_poller.async_stop)
             entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
-        # 存储数据
+        # Store the data
         hass.data[DOMAIN][entry.entry_id] = {
             "rest_poller": rest_poller,
             "health": health,
@@ -380,7 +381,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "mqtt_lock": _mqtt_refresh_lock,
         }
 
-        # 转发到平台
+        # Forward to the platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         # The location sensors have restored their last states: the SDK gets
         # the restored records before the first message can arrive, then the
@@ -421,10 +422,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        # 清理数据
+        # Clean up the data
         if entry.entry_id in hass.data.get(DOMAIN, {}):
             data = hass.data[DOMAIN][entry.entry_id]
-            # 标记正在卸载，阻止断连回调触发新的凭据刷新
+            # Mark as unloading so the disconnect callback does not trigger
+            # another credential refresh
             if "unload_flag" in data:
                 data["unload_flag"][0] = True
             sdk = data.get("sdk")
