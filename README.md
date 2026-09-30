@@ -8,6 +8,13 @@ Monitor and control Navimow robotic mowers in Home Assistant.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=geordiekorper&repository=scythnet-navimow-ha&category=Integration)
 
+> **Alpha software.** This fork is under active development, and its release
+> numbers continue the official integration's rather than describe its maturity.
+> Entity ids, attributes, actions and options can change between releases
+> without a migration path. Releases are published as GitHub pre-releases, which
+> HACS shows only while **Show beta versions** is on for this repository (see
+> [Installation](#installation-)). Keep a backup before updating.
+
 > **This Scythnet fork is based on [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA),
 > derived from [pgoutsos/NavimowHA](https://github.com/pgoutsos/NavimowHA) and the
 > official [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).**
@@ -159,9 +166,13 @@ repository:
 1. HACS → top-right menu → **Custom repositories**
 2. Repository: `https://github.com/geordiekorper/scythnet-navimow-ha`
 3. Category: **Integration**
-4. Search for `Navimow` in HACS and download it
-5. Restart Home Assistant
-6. Settings → Devices & Services → Add Integration → search `Navimow`
+4. Search for `Navimow` in HACS and open it
+5. In the download dialog turn on **Show beta versions** and pick the newest
+   alpha. This fork's releases are GitHub pre-releases: HACS hides them, and
+   later updates, while that switch is off. For an existing install the switch
+   is in the **Redownload** dialog.
+6. Restart Home Assistant
+7. Settings → Devices & Services → Add Integration → search `Navimow`
 
 **Switching from the official integration?** In HACS, **Remove** the existing
 Navimow download first (this deletes the files but keeps your configured device
@@ -243,9 +254,15 @@ filed against this repository; general integration issues belong upstream.
 ### Release versioning
 
 Releases are cut by [Release Please](https://github.com/googleapis/release-please)
-from conventional commit messages: `feat:` bumps the minor version, `fix:` the
-patch. Each run refreshes a release pull request; merging it updates the
-integration manifest, tags the commit `NavimowHA-v<version>` and publishes the
-GitHub release that HACS offers to users. The fork's releases start at 1.2.0,
-continuing the official numbering from 1.1.0. Hand-written notes for each release
-sit below the generated entry in the changelog.
+from conventional commit messages. Each run refreshes a release pull request;
+merging it updates the integration manifest, tags the commit
+`NavimowHA-v<version>` and publishes the GitHub release that HACS offers to users.
+
+The numbering continues the official integration's: the fork's 1.2.0 followed the
+official 1.1.0, so the number says nothing about maturity. From 1.3.0 on the fork
+is versioned as alpha software: every release is a pre-release, `1.3.0-alpha`,
+then `1.3.0-alpha.1`, `1.3.0-alpha.2` and so on whatever mix of features and
+fixes it carries, and is flagged as a pre-release on GitHub, so HACS shows it
+only with **Show beta versions** on. The suffix is dropped when a release is
+considered stable. Hand-written notes for each release sit below the generated
+entry in the changelog.

@@ -5,7 +5,7 @@
 > and the original [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
 > Fork releases are listed first; upstream history follows.
 
-## 1.3.0 in detail
+## 1.3.0-alpha in detail
 
 The integration now runs on the community edition of the Navimow SDK,
 [`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community)
