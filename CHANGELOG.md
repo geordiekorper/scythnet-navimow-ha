@@ -5,6 +5,49 @@
 > and the original [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).
 > Fork releases are listed first; upstream history follows.
 
+## [1.3.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.2.0...NavimowHA-v1.3.0) (2026-09-30)
+
+
+### Features
+
+* cloud_connected binary sensor ([73bdfa2](https://github.com/geordiekorper/scythnet-navimow-ha/commit/73bdfa292c40bc49c37f8a5e2130e12b09090566))
+* collector_status diagnostic sensor ([da3fe13](https://github.com/geordiekorper/scythnet-navimow-ha/commit/da3fe133209b4d92d7b58b5e8f90bd17b4e687f1))
+* last_message timestamp sensor ([03d2a79](https://github.com/geordiekorper/scythnet-navimow-ha/commit/03d2a79461e4e420082dcd8f393cbffc07855b93))
+* mower times for target-zone and delay reports ([57a3c12](https://github.com/geordiekorper/scythnet-navimow-ha/commit/57a3c1226c03332f7d6e3afdd8a88e3f617059ff))
+* MQTT watchdog rebuilds after 180 s of location silence while mowing ([bd663e8](https://github.com/geordiekorper/scythnet-navimow-ha/commit/bd663e84ee93e742bb5a50c1dfd38dae5d45ee24))
+* MQTT watchdog rebuilds the client when REST shows a missed transition ([fb93b5c](https://github.com/geordiekorper/scythnet-navimow-ha/commit/fb93b5c81831090a134748062287a60ffb225c58))
+* navimow.command action with the vendor's verdict for every command ([e16e704](https://github.com/geordiekorper/scythnet-navimow-ha/commit/e16e70411ab7cea5c260a74ce1a777afcc5372b9))
+* poll REST 5 s after each command ([84050c7](https://github.com/geordiekorper/scythnet-navimow-ha/commit/84050c78b9aaea3c6c53e7f36ee968b5dca6c237))
+* record messages on the MQTT event and attributes channels ([fc40f83](https://github.com/geordiekorper/scythnet-navimow-ha/commit/fc40f836931c22a036fb411c32467807a5f33108))
+* record MQTT payloads that are not JSON or not the expected shape ([2d79d8a](https://github.com/geordiekorper/scythnet-navimow-ha/commit/2d79d8af3648ed6cc3dd2f4f2d999899fb8b3af2))
+* record MQTT state messages that carry unknown fields ([c92da91](https://github.com/geordiekorper/scythnet-navimow-ha/commit/c92da918e5d45319fecbfbb8177cf2deeda7cb49))
+* record unknown location entry types and fields ([4692d67](https://github.com/geordiekorper/scythnet-navimow-ha/commit/4692d670cc8367a45baa45bdcbc3ec777fd8e0f1))
+* rejected_input diagnostic sensor ([8ce0343](https://github.com/geordiekorper/scythnet-navimow-ha/commit/8ce0343c8a74d539f8d80feac1fba48830b5f11c))
+* REST poll interval as an integration option ([476aaa7](https://github.com/geordiekorper/scythnet-navimow-ha/commit/476aaa7cabf3f5c718d582c0b5371827316bffe8))
+* rest_status diagnostic sensor with every REST reply as sent ([b7b330b](https://github.com/geordiekorper/scythnet-navimow-ha/commit/b7b330b607123836b994e3f176934882abcfb329))
+* return the vendor's verdict from the navimow resume and stop actions ([81d4f1b](https://github.com/geordiekorper/scythnet-navimow-ha/commit/81d4f1bbffa2ad47b17f63584d07768a64fdebd0))
+* steady REST status poll independent of MQTT ([8a10b41](https://github.com/geordiekorper/scythnet-navimow-ha/commit/8a10b41d4453eff51c9f809f74e11ffbfc752b1d))
+
+
+### Bug Fixes
+
+* a lone-entry location message is not an unknown field ([f6e37f6](https://github.com/geordiekorper/scythnet-navimow-ha/commit/f6e37f664980b12c48da482836ce667850763e23))
+* apply a location message's entries in time order ([7bc780a](https://github.com/geordiekorper/scythnet-navimow-ha/commit/7bc780a52de8c6b0833cf1b957cab2ce518466cf))
+* distinguish no-target and mow-all from unknown in the zone sensor ([66d8355](https://github.com/geordiekorper/scythnet-navimow-ha/commit/66d8355d1d185a259d29fda4c34eddadfa79cb19))
+* drop late location entries instead of letting the position jump back ([de0dc60](https://github.com/geordiekorper/scythnet-navimow-ha/commit/de0dc606e760bc2e3b5c46cd1ed1fc36974514fa))
+* first steady REST poll 5 s after start-up, not a full interval ([9214968](https://github.com/geordiekorper/scythnet-navimow-ha/commit/9214968897884c1398f61fc54ebde7e5f54517b0))
+* keep a late MQTT state message from becoming the current state ([9a0de3b](https://github.com/geordiekorper/scythnet-navimow-ha/commit/9a0de3b026c23674c6af7cbb94211f5962b61102))
+* last_message starts from messages before it existed; interval shown at once ([4ee4950](https://github.com/geordiekorper/scythnet-navimow-ha/commit/4ee4950d185236100c3651b21258e002d641fb62))
+* late-message guard survives untimed entries and start-up ([9403a05](https://github.com/geordiekorper/scythnet-navimow-ha/commit/9403a05734e3246907b7357ab9380731b4f8bf40))
+* MQTT keepalive 60 s instead of 2400 s ([88e27a9](https://github.com/geordiekorper/scythnet-navimow-ha/commit/88e27a94175c637375630674cd63a4502549f94b))
+* no MQTT client rebuild or credential refresh after the entry unloads ([e9cfb8b](https://github.com/geordiekorper/scythnet-navimow-ha/commit/e9cfb8b475ee9c6a9abb60dddb7b0b70d27c83fe))
+* publish every pose and task entry of a location message ([0d10641](https://github.com/geordiekorper/scythnet-navimow-ha/commit/0d10641cab1ad5af453534a551793824ff1ce4ed))
+* record late and implausibly stamped state messages as received ([ea7dff5](https://github.com/geordiekorper/scythnet-navimow-ha/commit/ea7dff59d2bb6971426d1e7d7d963edb65a29e1d))
+* reject implausibly stamped and placeholder location entries ([ae8c253](https://github.com/geordiekorper/scythnet-navimow-ha/commit/ae8c253cdd33fbe9dba026f3518d9ba206296bba))
+* REST follow-up polls are no longer postponed or dropped ([5d02c2b](https://github.com/geordiekorper/scythnet-navimow-ha/commit/5d02c2b503fa7445aac2675d5194b2001ee5c0a0))
+* run the REST watchdog on the poll's own replies, and only after success ([c4f65f2](https://github.com/geordiekorper/scythnet-navimow-ha/commit/c4f65f2eb90e076aad676723d0895944c08b07e2))
+* run the watchdog's silence check on the event loop ([dcd4994](https://github.com/geordiekorper/scythnet-navimow-ha/commit/dcd4994523dd849c21d34a06d2fd928f8aa31b45))
+
 ## [1.2.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.1.0...NavimowHA-v1.2.0) (2026-09-18)
 
 
