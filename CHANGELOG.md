@@ -35,6 +35,13 @@ official one. No entity, entity id or attribute name changes.
   resumes. Templates that compared the zone state to `unknown` should compare to
   `none` or `all`; the `partition_ids` attribute is unchanged, so the gate example
   needed no change beyond showing "All zones" in its friendly-name sensor.
+- **Zone sensor rows.** `delay_received_at` is now the receipt time of the first
+  delay report with the current flag value, where it was the latest repeat's.
+  The mower repeats the report about every two minutes, so the changing stamp
+  had the recorder write a row each time with nothing else changed (some 1,200
+  rows in 37 hours on the live run). A delay repeat now writes no row; a change
+  of the flag does, with its time. Target repeats still write a row each, since
+  `target_last_time_ms` advances: Scythnet's session replay needs every repeat.
 - **Location and state from the SDK.** The SDK decodes the location channel and
   filters late or implausibly stamped state messages; what it refuses is still
   recorded on `rejected_input`. Two small differences: a location entry whose

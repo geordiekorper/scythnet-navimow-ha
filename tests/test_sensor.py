@@ -1,5 +1,6 @@
 """Sensor attributes are grouped by the message type that produces them."""
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -21,6 +22,10 @@ from tests.test_location import FULL_TASK, POSE, RECEIVED, RECEIVED_AT
 
 DESCRIPTIONS = {d.key: d for d in SENSOR_DESCRIPTIONS}
 
+# A later receipt time, for a repeated report.
+LATER = "2026-09-17T20:02:00+00:00"
+LATER_AT = datetime.fromisoformat(LATER)
+
 
 class FakeCoordinator:
     """The coordinator's location handling (ingest, restored groups) with
@@ -29,6 +34,7 @@ class FakeCoordinator:
     ingest_location = NavimowCoordinator.ingest_location
     is_group_restored = NavimowCoordinator.is_group_restored
     has_task_report = NavimowCoordinator.has_task_report
+    get_delay_since = NavimowCoordinator.get_delay_since
     _maybe_learn_dock = NavimowCoordinator._maybe_learn_dock
 
     def __init__(self):
@@ -39,6 +45,7 @@ class FakeCoordinator:
         self._last_location = None
         self._restored_groups = set()
         self._has_task = False
+        self._delay_since = None
         self._last_state = None
         self._dock = None
         self.state = None  # a DeviceStateMessage-like object, or None
@@ -85,9 +92,9 @@ class SensorAttributesTest(unittest.TestCase):
             coordinator=self.coordinator, entity_description=DESCRIPTIONS[key]
         )
 
-    def feed(self, *entries):
+    def feed(self, *entries, received_at=RECEIVED_AT):
         """One location message through the SDK's decoder and the coordinator."""
-        for message in self.decoder.decode("dev-1", list(entries), RECEIVED_AT).messages:
+        for message in self.decoder.decode("dev-1", list(entries), received_at).messages:
             self.coordinator.ingest_location(message)
 
     def test_mowing_zone_exposes_the_task_group(self):
@@ -188,6 +195,41 @@ class SensorAttributesTest(unittest.TestCase):
             "partition_ids", "target_time_ms", "target_last_time_ms",
             "task_delay", "delay_received_at", "is_restored",
         })
+
+    def test_zone_attributes_do_not_change_on_a_repeated_delay_report(self):
+        # The mower repeats the delay report about every two minutes; a
+        # row per repeat would be the zone sensor's whole history.
+        self.feed({"type": 4, "taskDelay": False})
+        before = self.sensor("zone").extra_state_attributes
+        self.feed({"type": 4, "taskDelay": False}, received_at=LATER_AT)
+        self.assertEqual(self.sensor("zone").extra_state_attributes, before)
+        self.assertEqual(before["delay_received_at"], RECEIVED)
+        self.feed({"type": 4, "taskDelay": True}, received_at=LATER_AT)
+        after = self.sensor("zone").extra_state_attributes
+        self.assertIs(after["task_delay"], True)
+        self.assertEqual(after["delay_received_at"], LATER)
+
+    def test_a_repeated_target_report_changes_the_zone_attributes(self):
+        # Scythnet's session replay needs every target repeat, so each one
+        # advances target_last_time_ms and writes a row; the first report's
+        # time stands.
+        self.feed({"type": 3, "partitionIds": [2], "time": 1700000000010})
+        before = self.sensor("zone").extra_state_attributes
+        self.feed({"type": 3, "partitionIds": [2], "time": 1700000120010})
+        after = self.sensor("zone").extra_state_attributes
+        self.assertNotEqual(before, after)
+        self.assertEqual(after["target_time_ms"], 1700000000010)
+        self.assertEqual(after["target_last_time_ms"], 1700000120010)
+        self.assertEqual(after["partition_ids"], [2])
+
+    def test_a_restored_delay_keeps_its_time_through_a_live_repeat(self):
+        self.restore()
+        self.coordinator._restored_groups = {"delay"}
+        self.coordinator._delay_since = RECEIVED_AT
+        self.feed({"type": 4, "taskDelay": False}, received_at=LATER_AT)
+        attrs = self.sensor("zone").extra_state_attributes
+        self.assertEqual(attrs["delay_received_at"], RECEIVED)
+        self.assertFalse(attrs["is_restored"])
 
     def test_progress_is_unknown_until_a_task_report(self):
         self.feed(POSE)

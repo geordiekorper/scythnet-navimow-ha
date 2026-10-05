@@ -168,6 +168,8 @@ def restore_location_groups(
         if target is not None:
             groups.append(("target", target))
         if isinstance(attrs.get("task_delay"), bool):
+            # delay_received_at is when the flag was first seen with this
+            # value; the coordinator keeps it as such (get_delay_since).
             groups.append(("delay", {
                 "task_delay": attrs["task_delay"],
                 "delay_received_at": _str(attrs.get("delay_received_at")),

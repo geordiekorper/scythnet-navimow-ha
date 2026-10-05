@@ -1,7 +1,7 @@
 """DataUpdateCoordinator for Navimow integration."""
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -74,6 +74,12 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Whether a task entry was applied or a task group restored: the
         # record's task fields may all be None after a real task report.
         self._has_task = False
+        # When the delay flag took its current value: the receipt time of the
+        # first delay entry that reported it. The record's delay_received_at
+        # is the latest entry's, and the mower repeats the report about every
+        # two minutes, so shown as an attribute it would write a recorder row
+        # on every repeat.
+        self._delay_since: datetime | None = None
         self._dock: dict[str, Any] | None = None  # learned {"x","y","n"}
         self._last_mqtt_update: float | None = None
         self._last_http_fetch: float | None = None
@@ -388,6 +394,15 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._restored_groups.discard("target")
         elif message.entry_type == 4:
             self._restored_groups.discard("delay")
+            # A repeat of the current flag keeps the time it was first seen,
+            # a restored one included.
+            previous = self._last_location
+            if (
+                previous is None
+                or self._delay_since is None
+                or previous.task_delay != message.location.task_delay
+            ):
+                self._delay_since = message.location.delay_received_at
         self._last_location = message.location
         self._maybe_learn_dock(message.location)
         self.async_set_updated_data(self._build_data())
@@ -432,6 +447,9 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_location = DeviceLocation.from_dict(
             {**self._restored_fields, "device_id": self.device.id}
         )
+        if group == "delay":
+            # The zone sensor recorded the time its flag was first seen.
+            self._delay_since = self._last_location.delay_received_at
         self.async_set_updated_data(self._build_data())
 
     def async_finish_restore(self) -> None:
@@ -447,6 +465,10 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def has_task_report(self) -> bool:
         """Whether a task entry was applied, or a task group restored."""
         return self._has_task
+
+    def get_delay_since(self) -> datetime | None:
+        """When the delay flag was first reported with its current value (UTC)."""
+        return self._delay_since
 
     def is_group_restored(self, group: str) -> bool:
         """Whether a location group still shows its restored value."""

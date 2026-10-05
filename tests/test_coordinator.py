@@ -217,6 +217,24 @@ class CoordinatorSourceTest(unittest.IsolatedAsyncioTestCase):
         self.coordinator.restore_location("task", {"current_zone": 9})
         self.assertIsNone(self.coordinator.get_device_location().current_zone)
 
+    async def test_the_delay_time_is_first_seen_and_survives_a_restart(self):
+        self.coordinator.restore_location(
+            "delay", {"task_delay": False, "delay_received_at": RECEIVED}
+        )
+        self.assertEqual(self.coordinator.get_delay_since(), RECEIVED_AT)
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        later = datetime(2026, 9, 17, 20, 2, tzinfo=timezone.utc)
+        (repeat,) = decoder.decode("dev-1", [{"type": 4, "taskDelay": False}], later).messages
+        self.coordinator.ingest_location(repeat)
+        # the record's own stamp is the latest entry's; the shown one is not
+        self.assertEqual(self.coordinator.get_device_location().delay_received_at, later)
+        self.assertEqual(self.coordinator.get_delay_since(), RECEIVED_AT)
+        self.assertFalse(self.coordinator.is_group_restored("delay"))
+        (change,) = decoder.decode("dev-1", [{"type": 4, "taskDelay": True}], later).messages
+        self.coordinator.ingest_location(change)
+        self.assertEqual(self.coordinator.get_delay_since(), later)
+
     async def test_another_devices_entry_is_ignored(self):
         other = LocationDecoder().decode("dev-2", [POSE], RECEIVED_AT).messages
         self.coordinator.ingest_location(other[0])

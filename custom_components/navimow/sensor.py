@@ -234,7 +234,10 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
             return None
         restored = lambda *groups: any(self.coordinator.is_group_restored(g) for g in groups)
         if key == "zone":
-            # type-3 target and type-4 delay
+            # type-3 target and type-4 delay. Every target repeat advances
+            # target_last_time_ms and so writes a recorder row: Scythnet's
+            # session replay needs each one. A delay repeat changes nothing,
+            # since delay_received_at is the first report of the current flag.
             return {
                 "partition_ids": (
                     list(loc.partition_ids) if loc.partition_ids is not None else None
@@ -242,7 +245,7 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
                 "target_time_ms": loc.target_at,
                 "target_last_time_ms": loc.target_last_at,
                 "task_delay": loc.task_delay,
-                "delay_received_at": _iso(loc.delay_received_at),
+                "delay_received_at": _iso(self.coordinator.get_delay_since()),
                 "is_restored": restored("target", "delay"),
             }
         if key == "position_x":
