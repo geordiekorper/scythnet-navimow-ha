@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
-from mower_sdk.errors import MowerAPIError
 
 from .const import REST_POLL_MAX_BACKOFF, REST_POLL_MIN_SECONDS
 
@@ -32,24 +31,7 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-STATUS_ENDPOINT = "/openapi/smarthome/getVehicleStatus"
 FIRST_POLL_DELAY = 5
-
-
-async def async_fetch_statuses(api: MowerAPI, device_ids: list[str]) -> list[dict[str, Any]]:
-    """The raw status entries for ``device_ids``, one getVehicleStatus call.
-
-    MowerAPI.async_get_device_statuses keeps only the fields the SDK models,
-    so this reads the reply itself: a field the cloud starts sending must
-    reach the rest_status sensor. Raises MowerAPIError like the SDK does.
-    """
-    response = await api._async_request(  # noqa: SLF001 - see docstring
-        "POST", STATUS_ENDPOINT, data={"devices": [{"id": d} for d in device_ids]}
-    )
-    if response.get("code") != 1:
-        raise MowerAPIError(f"getVehicleStatus failed: {response.get('desc')}")
-    devices = ((response.get("data") or {}).get("payload") or {}).get("devices") or []
-    return [d for d in devices if isinstance(d, dict)]
 
 
 class RestPoller:
@@ -177,7 +159,9 @@ class RestPoller:
         device_ids = list(self.coordinators)
         try:
             await self._ensure_token()
-            statuses = await async_fetch_statuses(self.api, device_ids)
+            # The entries as the cloud sent them, so a field it starts
+            # sending reaches the rest_status sensor.
+            statuses = await self.api.async_get_vehicle_status_raw(device_ids)
         except Exception as err:  # noqa: BLE001 - any failure backs off
             self._failures += 1
             self.last_error = str(err) or type(err).__name__

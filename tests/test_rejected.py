@@ -5,7 +5,6 @@ import unittest
 from custom_components.navimow.rejected import (
     PAYLOAD_LIMIT,
     REASONS,
-    raw_message_rejection,
     rejection_record,
 )
 
@@ -53,30 +52,3 @@ class RejectionRecordTest(unittest.TestCase):
             size = len(json.dumps(rec, ensure_ascii=False).encode())
             self.assertLess(size, 16384, filler)
             self.assertGreater(size, PAYLOAD_LIMIT, filler)
-
-
-class RawMessageTest(unittest.TestCase):
-    STATE = {"state": "isDocked", "battery": 100, "timestamp": 1700000000, "device_id": "dev-1"}
-
-    def test_known_state_fields_are_not_recorded(self):
-        self.assertIsNone(raw_message_rejection("state", json.dumps(self.STATE)))
-        rest_shape = {"vehicleState": "isDocked", "capacityRemaining": [], "status": "x"}
-        self.assertIsNone(raw_message_rejection("state", json.dumps(rest_shape)))
-
-    def test_unknown_state_field_is_recorded(self):
-        text = json.dumps({**self.STATE, "signal": -60})
-        self.assertEqual(raw_message_rejection("state", text), "unknown_field")
-
-    def test_event_attributes_and_other_channels_are_recorded(self):
-        event = json.dumps({"event": "bladeBlocked", "timestamp": 1700000000})
-        self.assertEqual(raw_message_rejection("event", event), "unknown_channel")
-        attrs = json.dumps({"attributes": {"firmware": "1.2"}})
-        self.assertEqual(raw_message_rejection("attributes", attrs), "unknown_channel")
-        self.assertEqual(raw_message_rejection("telemetry", "{}"), "unknown_channel")
-
-    def test_state_that_is_not_a_json_object_is_unparsable(self):
-        for text in ("not json", "", "[1, 2]", '"isDocked"', "{broken"):
-            self.assertEqual(raw_message_rejection("state", text), "unparsable", text)
-
-    def test_location_is_left_to_its_parser(self):
-        self.assertIsNone(raw_message_rejection("location", "not json"))

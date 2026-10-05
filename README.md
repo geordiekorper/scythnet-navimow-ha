@@ -8,6 +8,13 @@ Monitor and control Navimow robotic mowers in Home Assistant.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=geordiekorper&repository=scythnet-navimow-ha&category=Integration)
 
+> **Alpha software.** This fork is under active development, and its release
+> numbers continue the official integration's rather than describe its maturity.
+> Entity ids, attributes, actions and options can change between releases
+> without a migration path. Releases are published as GitHub pre-releases, which
+> HACS shows only while **Show beta versions** is on for this repository (see
+> [Installation](#installation-)). Keep a backup before updating.
+
 > **This Scythnet fork is based on [vahesoo/NavimowHA](https://github.com/vahesoo/NavimowHA),
 > derived from [pgoutsos/NavimowHA](https://github.com/pgoutsos/NavimowHA) and the
 > official [segwaynavimow/NavimowHA](https://github.com/segwaynavimow/NavimowHA).**
@@ -19,28 +26,29 @@ Monitor and control Navimow robotic mowers in Home Assistant.
 
 The official integration exposes a `lawn_mower` entity and a battery sensor. The
 mower also continuously publishes its **live pose and current map partition**
-over MQTT (topic `/downlink/vehicle/{id}/realtimeDate/location`), but the bundled
-`navimow-sdk` neither subscribes to that topic nor parses it, so none of it
-reaches Home Assistant.
+over MQTT (topic `/downlink/vehicle/{id}/realtimeDate/location`), which the
+official integration's SDK, `navimow-sdk`, neither subscribes to nor parses.
 
-This fork makes the integration subscribe to that topic and turn it into
-entities, giving you these **additional sensors** per mower (populated while the
-mower is active):
+This fork runs on the community edition of the SDK,
+[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community),
+which subscribes to that topic and decodes it. What the fork adds are the
+entities built on it, giving you these **additional sensors** per mower
+(populated while the mower is active):
 
 | Entity | Meaning |
 | --- | --- |
-| `sensor.<mower>_zone` | Target partition id — the zone the current task is headed for (set at task start). `all` while the mower mows or pauses with no named zone (a "mow all" task), `none` when it reports no target and is not mowing (docked, returning after a dock command), `unknown` until the first target report. The full id list is in `partition_ids`; `target_time_ms` is the mower time of the first report of that target and `target_last_time_ms` of its latest repeat. `task_delay` is the rain/schedule delay flag, `delay_received_at` when it was last reported |
+| `sensor.<mower>_zone` | Target partition id — the zone the current task is headed for (set at task start). `all` while the mower mows or pauses with no named zone (a "mow all" task), `none` when it reports no target and is not mowing (docked, returning after a dock command), `unknown` until the first target report. The full id list is in `partition_ids`; `target_time_ms` is the mower time of the first report of that target and `target_last_time_ms` of its latest repeat, so every target report writes a recorder row (Scythnet's session replay needs each repeat). `task_delay` is the rain/schedule delay flag, `delay_received_at` when it was first reported with that value; a repeat of an unchanged flag writes no row |
 | `sensor.<mower>_position_x` | X position in meters (local grid; origin = the RTK/mapping reference, usually *near* the dock). Attributes carry the complete latest pose: `y`, `theta_rad`, `vehicle_state`, `pose_time_ms`, `received_at`, `source` |
 | `sensor.<mower>_position_y` | Y position in meters |
 | `sensor.<mower>_heading` | Mower orientation in degrees (0–360) |
-| `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too). Attributes carry the rest of the mower's task report: `route_progress` (0–10000), `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`, `mow_start_type`, `map_work_position`, `task_time_ms` |
+| `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too). Attributes carry the rest of the mower's task report: `route_progress` (0–10000; the last route reading reported, kept when a later task entry omits it), `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`, `mow_start_type`, `map_work_position`, `task_time_ms` |
 | `sensor.<mower>_mow_progress` | Planned-route progress for the current task as a percentage (the mower's 0–10000 route progress ÷ 100, falling back to its `mowingPercentage`); `unknown` until a task report arrives. Not area coverage. The `progress_source` attribute names the field used |
 | `sensor.<mower>_dock_x` / `_dock_y` | Dock position in meters — auto-learned by averaging the mower's pose while docked/charging; survives restarts. `unknown` until the mower has docked once. Used by the example map card to place the dock marker (the coordinate origin is **not** reliably the dock) |
-| `binary_sensor.<mower>_cloud_connected` | Diagnostic: on while the MQTT connection to the Navimow cloud is up (shared by all mowers of the account). Attributes `client_id`, `connected_at`, `disconnected_at` and `disconnect_reason`, `connect_failed_at` and `connect_fail_reason` (a refused CONNACK, or a failure before one, e.g. a token rejected at the WebSocket upgrade) |
+| `binary_sensor.<mower>_cloud_connected` | Diagnostic: on while the MQTT connection to the Navimow cloud is up (shared by all mowers of the account). Attributes `client_id`, `connected_at`, `disconnected_at` and `disconnect_reason`, `connect_failed_at` and `connect_fail_reason` (a refused CONNACK, or a failure before one, e.g. a token rejected at the WebSocket upgrade). The reasons come from the SDK: `requested` for a disconnect asked for, the MQTT library's reason text otherwise, `refused: …` with that text for a refused CONNACK, `connection failed before CONNACK` for a failure before one |
 | `sensor.<mower>_last_message` | Diagnostic timestamp: when the last MQTT message for this mower arrived, on any channel. Written at most every 30 s (a mower that is out sends a pose every 2 s), never more than 30 s behind. With `cloud_connected` it tells a quiet mower from a stalled connection |
-| `sensor.<mower>_collector_status` | Diagnostic: the cloud session's health in one place (shared by all mowers of the account). State `ok`, `starting` (not connected yet), `disconnected`, or `poll_failing` (MQTT up, REST polls failing). Attributes count `connects`, `disconnects`, `connect_failures`, `credential_refreshes` and `rebuilds` since start-up, with `last_rebuild_reason`/`_at`, `poll_interval`, `last_poll_error`/`_at` and `token_expires_at`. Written only when one of these changes |
+| `sensor.<mower>_collector_status` | Diagnostic: the cloud session's health in one place (shared by all mowers of the account). State `ok`, `starting` (not connected yet), `disconnected`, or `poll_failing` (MQTT up, REST polls failing). Attributes count `connects`, `disconnects`, `connect_failures` and `rebuilds` since start-up (the SDK's own counters) and `credential_refreshes` (broker credentials fetched again after a failed connection attempt: a refused CONNACK, or a failure before one, at most once a minute), with `last_rebuild_reason`/`_at`, `poll_interval`, `last_poll_error`/`_at` and `token_expires_at`. Written only when one of these changes |
 | `sensor.<mower>_rest_status` | Diagnostic: the latest REST status reply as sent. State is the raw `vehicleState` (`isDocked`, `isRunning`, `isIdel`, …, not the mapped activity); attributes `battery`, `battery_level` (`LOW`…`FULL`), `polled_at`, and `unknown_fields` for anything the reply carries beyond the known fields. One recorder row per poll |
-| `sensor.<mower>_rejected_input` | Diagnostic: input received but not applied — late, implausibly stamped or placeholder entries, fields or channels no decoder knows, payloads that do not parse. State is a count since start-up; attributes describe the latest item: `channel`, `topic`, `reason` (`reasons` when several applied), `received_at`, `payload` (cut to 8 KB, `truncated` says so). The recorder keeps every item, so the full sequence can be read back from history |
+| `sensor.<mower>_rejected_input` | Diagnostic: input received but not applied — late, implausibly stamped or placeholder entries, fields or channels no decoder knows, payloads that do not parse. The SDK judges the state and location messages; event and attributes messages are recorded whole as `unknown_channel` (no entity decodes them; attributes also show, as received, on the lawn mower entity's `attributes` attribute). State is a count since start-up; attributes describe the latest item: `channel`, `topic`, `reason` (`reasons` when several applied), `received_at`, `payload` (cut to 8 KB, `truncated` says so). The recorder keeps every item, so the full sequence can be read back from history |
 | `sensor.<mower>_data_source` | Diagnostic: which source supplied the current mower state (`mqtt_push`, `mqtt_cache`, `http_fallback`, `none`). Attributes hold the last MQTT state message and the last REST poll side by side (`mqtt_*`, `rest_*`), each with the device's own timestamp when it sent one and Home Assistant's receipt or poll time. REST status is polled every 120 s for all mowers in one call, whatever MQTT is doing (backing off to at most 10 min after failures); it becomes the shown state (`http_fallback`) only while MQTT has been silent for 5 min |
 
 These unlock zone-aware and position-aware automations — for example opening a
@@ -49,16 +57,17 @@ coordinates are a **local Cartesian grid in meters**, not latitude/longitude.
 
 ### How it works
 
-No changes to `navimow-sdk` are required — this fork is self-contained and works
-against the stock SDK from PyPI:
-
-* On MQTT connect, the integration subscribes to the `…/realtimeDate/location`
-  topic for each device.
-* Incoming location messages (a JSON array of objects keyed by `type`:
-  `1` = pose, `3` = partition/zone, `4` = task-delay) are decoded in
-  `location.py` and merged into a per-device record, so a pose update never
-  wipes the last-known zone.
-* The record is pushed to the coordinator and exposed via the four sensors above.
+* The SDK subscribes to the `…/realtimeDate/location` topic for each device
+  and decodes each message (a JSON array of entries keyed by `type`: `1` =
+  pose, `2` = task, `3` = target zone, `4` = task delay) into one merged
+  record per device, so a pose update never wipes the last-known zone. Late
+  or implausibly stamped entries are rejected and recorded on
+  `rejected_input`.
+* Each applied entry reaches the coordinator with the record as it stood
+  after it, and the sensors above read that record.
+* On a restart, the location sensors' last recorded states are handed back
+  to the SDK before the MQTT connection opens, so they show at once and a
+  late message older than them is still rejected.
 
 Because the location stream is delivered through Segway's cloud, these sensors
 update only while the mower is active and depend on internet connectivity. Build
@@ -157,15 +166,36 @@ repository:
 1. HACS → top-right menu → **Custom repositories**
 2. Repository: `https://github.com/geordiekorper/scythnet-navimow-ha`
 3. Category: **Integration**
-4. Search for `Navimow` in HACS and download it
-5. Restart Home Assistant
-6. Settings → Devices & Services → Add Integration → search `Navimow`
+4. Search for `Navimow` in HACS and open it
+5. In the download dialog turn on **Show beta versions** and pick the newest
+   alpha. This fork's releases are GitHub pre-releases: HACS hides them, and
+   later updates, while that switch is off. For an existing install the switch
+   is in the **Redownload** dialog.
+6. Restart Home Assistant
+7. Settings → Devices & Services → Add Integration → search `Navimow`
 
 **Switching from the official integration?** In HACS, **Remove** the existing
 Navimow download first (this deletes the files but keeps your configured device
 and login), then add this fork as above and download it. Do **not** delete the
 Navimow integration from Settings → Devices & Services, or you'll have to
 re-authenticate.
+
+### Requirements
+
+The integration requires the community edition of the Navimow SDK,
+[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community),
+which Home Assistant installs at the first start after the update. It and the
+upstream `navimow-sdk` (which earlier releases of this integration and the
+official integration pull in) both provide the `mower_sdk` package. Home
+Assistant never uninstalls a requirement, so both stay listed until the
+container is recreated (Home Assistant Container) or until both are uninstalled
+by hand and Home Assistant restarted (Home Assistant Core in a virtual
+environment). After the install, the files in use are the community edition's;
+the SDK logs a warning while both are listed. If the `mower_sdk` package on
+disk is not the distribution the integration requires (the upstream package
+installed again over it, or another copy earlier on the path), the integration
+refuses to start and its error names the versions found, where the package was
+loaded from, and what to remove.
 
 ## Usage 🎮
 
@@ -205,8 +235,11 @@ that `…/realtimeDate/location` messages are arriving.
 
 ## Navimow SDK Library 📚
 
-This integration uses the `navimow-sdk` package to communicate with Navimow
-mowers. This fork does **not** modify the SDK.
+This fork uses [`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community),
+the community edition of the `navimow-sdk` package the official integration
+uses. The import name is the same (`mower_sdk`); the community edition adds the
+location channel, the late-state filter, connection counters and hooks, and the
+command verdicts this fork relies on. See Requirements under Installation.
 
 ## Relationship to upstream & contributing back
 
@@ -221,9 +254,15 @@ filed against this repository; general integration issues belong upstream.
 ### Release versioning
 
 Releases are cut by [Release Please](https://github.com/googleapis/release-please)
-from conventional commit messages: `feat:` bumps the minor version, `fix:` the
-patch. Each run refreshes a release pull request; merging it updates the
-integration manifest, tags the commit `NavimowHA-v<version>` and publishes the
-GitHub release that HACS offers to users. The fork's releases start at 1.2.0,
-continuing the official numbering from 1.1.0. Hand-written notes for each release
-sit below the generated entry in the changelog.
+from conventional commit messages. Each run refreshes a release pull request;
+merging it updates the integration manifest, tags the commit
+`NavimowHA-v<version>` and publishes the GitHub release that HACS offers to users.
+
+The numbering continues the official integration's: the fork's 1.2.0 followed the
+official 1.1.0, so the number says nothing about maturity. From 1.3.0 on the fork
+is versioned as alpha software: every release is a pre-release, `1.3.0-alpha`,
+then `1.3.0-alpha.1`, `1.3.0-alpha.2` and so on whatever mix of features and
+fixes it carries, and is flagged as a pre-release on GitHub, so HACS shows it
+only with **Show beta versions** on. The suffix is dropped when a release is
+considered stable. Hand-written notes for each release sit below the generated
+entry in the changelog.
