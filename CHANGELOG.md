@@ -67,6 +67,11 @@ official one. No entity, entity id or attribute name changes.
   cap stays at 600 s. An install that wants the previous cadence sets 120 s in
   the integration's options. The cloud's limit on the status endpoint is not
   documented, and an edition multiplies the calls by its installs.
+- **Recorder retention.** When the recorder keeps fewer than 30 days of history
+  (`purge_keep_days`, 10 by default), the integration raises a repair issue
+  suggesting 30 or more, since its entities are the mower's whole record. It is
+  a warning that **Ignore** silences for good; it clears itself once the
+  retention reaches 30 days. The README's installation section says the same.
 
 ## [1.2.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.1.0...NavimowHA-v1.2.0) (2026-09-18)
 

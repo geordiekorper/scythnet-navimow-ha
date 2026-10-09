@@ -174,6 +174,23 @@ repository:
 6. Restart Home Assistant
 7. Settings → Devices & Services → Add Integration → search `Navimow`
 
+**Recorder retention.** Home Assistant keeps 10 days of history by default
+(`recorder: purge_keep_days`). This integration's entities are the mower's
+whole record, every position, task reading, state report and status poll, so
+on a fresh install they vanish after ten days. Keep 30 days or more if the
+record should outlast a short absence:
+
+```yaml
+recorder:
+  purge_keep_days: 30
+```
+
+While the retention is under 30 days the integration raises a repair issue
+that says so. It is a suggestion: **Ignore** on the Repairs page silences it
+for good, and it clears itself once the retention reaches 30. An application
+that reads the mower's history from Home Assistant (Scythnet reads 90 days)
+can go back no further than the recorder keeps.
+
 **Switching from the official integration?** In HACS, **Remove** the existing
 Navimow download first (this deletes the files but keeps your configured device
 and login), then add this fork as above and download it. Do **not** delete the

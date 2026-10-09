@@ -5,6 +5,9 @@
     "@segwaynavimow"
   ],
   "config_flow": true,
+  "after_dependencies": [
+    "recorder"
+  ],
   "documentation": "https://github.com/geordiekorper/scythnet-navimow-ha",
   "issue_tracker": "https://github.com/geordiekorper/scythnet-navimow-ha/issues",
   "iot_class": "cloud_polling",

@@ -37,6 +37,10 @@ from .const import (
     REST_POLL_SECONDS,
     CONF_REST_POLL_SECONDS,
 )
+from .retention import (
+    async_check_recorder_retention,
+    async_delete_recorder_retention_issue,
+)
 
 if sdk_check.PROBLEM is None:
     from .coordinator import NavimowCoordinator
@@ -397,6 +401,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await session.start()
         hass.async_create_task(_probe_mqtt_status(sdk))
         async_setup_services(hass)
+        # A suggestion, as a repair issue the owner can ignore: the entities
+        # are the mower's whole record, and 10 days is the recorder's default.
+        async_check_recorder_retention(hass, entry)
 
         return True
 
@@ -415,6 +422,11 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
         poller.async_set_interval(entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS))
         if data.get("health") is not None:
             data["health"].note_settings_changed()  # collector_status shows it
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """The entry is deleted: its retention suggestion goes with it."""
+    async_delete_recorder_retention_issue(hass, entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
