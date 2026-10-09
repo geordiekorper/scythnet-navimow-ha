@@ -27,13 +27,13 @@
   "options": {
     "step": {
       "init": {
-        "title": "Navimow 选项",
-        "description": "配置 Navimow 集成选项",
+        "title": "Navimow Options",
+        "description": "Configure Navimow integration options",
         "data": {
-          "rest_poll_seconds": "REST 状态轮询间隔（秒）"
+          "rest_poll_seconds": "REST status poll interval (seconds)"
         },
         "data_description": {
-          "rest_poll_seconds": "Navimow 云端状态查询的间隔，30–600 秒。"
+          "rest_poll_seconds": "How often the Navimow cloud's status endpoint is polled for all mowers, 60–600 s. Default 300."
         }
       }
     }

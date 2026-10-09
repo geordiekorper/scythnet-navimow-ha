@@ -37,7 +37,7 @@
           "rest_poll_seconds": "REST-Statusabfrage-Intervall (Sekunden)"
         },
         "data_description": {
-          "rest_poll_seconds": "Wie oft der Statusendpunkt der Navimow-Cloud für alle Mäher abgefragt wird, 30–600 s. Standard 120."
+          "rest_poll_seconds": "Wie oft der Statusendpunkt der Navimow-Cloud für alle Mäher abgefragt wird, 60–600 s. Standard 300."
         }
       }
     }

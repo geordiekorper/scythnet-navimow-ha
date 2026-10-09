@@ -7,8 +7,11 @@ whether MQTT missed a transition. One poll per config entry covers all of its
 mowers in a single getVehicleStatus call, independent of MQTT health.
 
 The cloud answers from a cache that lags a minute or two, and its rate limit
-is not documented; 120 s is what Scythnet and NaviWatch run without tripping
-it. A failed poll backs off (doubling up to REST_POLL_MAX_BACKOFF) until one
+is not documented; 120 s has run on Scythnet, NaviWatch and this fork without
+tripping it, and the only refusal on record is on the credential endpoint.
+The default is REST_POLL_SECONDS all the same, since an edition multiplies
+the calls by its installs; the option goes down to REST_POLL_MIN_SECONDS. A
+failed poll backs off (doubling up to REST_POLL_MAX_BACKOFF) until one
 succeeds.
 """
 from __future__ import annotations

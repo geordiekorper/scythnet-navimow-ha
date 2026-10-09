@@ -28,16 +28,16 @@ class OptionsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["type"], "form")
         return result["data_schema"]
 
-    async def test_form_defaults_to_120_then_to_the_saved_value(self):
-        self.assertEqual((await self.form_schema({}))({}), {"rest_poll_seconds": 120})
+    async def test_form_defaults_to_300_then_to_the_saved_value(self):
+        self.assertEqual((await self.form_schema({}))({}), {"rest_poll_seconds": 300})
         self.assertEqual(
-            (await self.form_schema({"rest_poll_seconds": 300}))({}), {"rest_poll_seconds": 300}
+            (await self.form_schema({"rest_poll_seconds": 120}))({}), {"rest_poll_seconds": 120}
         )
 
     async def test_interval_is_bounded(self):
         schema = await self.form_schema({})
-        self.assertEqual(schema({"rest_poll_seconds": "45"}), {"rest_poll_seconds": 45})
-        for bad in (29, 601):
+        self.assertEqual(schema({"rest_poll_seconds": "75"}), {"rest_poll_seconds": 75})
+        for bad in (59, 601):
             with self.assertRaises(vol.Invalid):
                 schema({"rest_poll_seconds": bad})
 
