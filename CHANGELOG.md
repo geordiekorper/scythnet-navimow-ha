@@ -79,7 +79,7 @@ on the dock sensors.
   rules and the rebuild they ask for, the broker-credential refresh after a
   refused connection, the token push, and the merge of what MQTT pushes and
   what REST answers into one state per mower. `session.py`, `rest_poll.py`
-  and `watchdog.py` are gone (1,430 lines of the package deleted, 726
+  and `watchdog.py` are gone (1,502 lines of the package deleted, 719
   added; 49 tests whose behaviour the SDK's own suite pins). What shows:
   `data_source` never reads `mqtt_cache` any more (the client registers its
   handler before the feed connects); `credential_refreshes` on
