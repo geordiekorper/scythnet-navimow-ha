@@ -337,8 +337,10 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
     setup lets the connect end on its own (shielded again, so a second
     cancellation does not interrupt the client either), disconnects the
     client when the connect completed, whether before or after the
-    cancellation arrived, and only then unwinds.
+    cancellation arrived, and only then unwinds. A setup cancelled a second
+    time stops waiting; the connect then undoes itself when it completes.
     """
+    loop = asyncio.get_running_loop()
     connect = asyncio.ensure_future(client.async_connect())
     try:
         await asyncio.shield(connect)
@@ -348,11 +350,21 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
                 await asyncio.shield(connect)
             except BaseException:  # noqa: BLE001 - its failure, or a second cancellation
                 pass
-        if connect.done() and not connect.cancelled() and connect.exception() is None:
-            # Completed, before or after the cancellation: stop what it started.
-            await asyncio.shield(client.async_disconnect())
-        elif not connect.done():
-            _LOGGER.warning("Navimow setup cancelled twice; the connect may still be running")
+        if connect.done():
+            if not connect.cancelled() and connect.exception() is None:
+                # Completed, before or after the cancellation: stop what it started.
+                await asyncio.shield(client.async_disconnect())
+        else:
+            # Cancelled twice: nobody waits any longer, so the connect takes
+            # down what it completes, if it completes.
+            def _undo_when_done(done: asyncio.Future) -> None:
+                if not done.cancelled() and done.exception() is None:
+                    loop.create_task(client.async_disconnect())
+
+            connect.add_done_callback(_undo_when_done)
+            _LOGGER.warning(
+                "Navimow setup cancelled twice; the connect still under way disconnects itself"
+            )
         await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         if isinstance(err, MowerAuthRequiredError):

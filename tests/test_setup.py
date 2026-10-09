@@ -182,6 +182,56 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
         self.client.async_disconnect.assert_awaited_once()
         self.undone()
 
+    async def test_a_setup_cancelled_twice_lets_the_connect_undo_itself(self):
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def connect():
+            started.set()
+            await release.wait()
+
+        self.client.async_connect = connect
+        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
+        await started.wait()
+        task.cancel()  # the first: the undo waits for the connect
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            task.cancel()  # the second: the undo stops waiting
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertIn("disconnects itself", logs.output[0])
+        self.undone()
+        self.client.async_disconnect.assert_not_awaited()  # nothing completed yet
+        release.set()  # the connect completes after everyone gave up
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.client.async_disconnect.assert_awaited_once()
+
+    async def test_a_setup_cancelled_twice_with_a_connect_that_then_fails_disconnects_nothing(self):
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def connect():
+            started.set()
+            await release.wait()
+            raise MowerAPIError("down")
+
+        self.client.async_connect = connect
+        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
+        await started.wait()
+        task.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        with self.assertLogs(LOGGER, level="WARNING"):
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.client.async_disconnect.assert_not_awaited()
+        self.undone()
+
     async def test_a_setup_cancelled_during_a_connect_that_then_fails_undoes_without_a_disconnect(self):
         started = asyncio.Event()
 
