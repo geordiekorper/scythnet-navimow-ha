@@ -19,7 +19,7 @@ from mower_sdk.models import (
 from custom_components.navimow.coordinator import NavimowCoordinator
 
 from tests.fakes import REST_PAYLOAD, FakeClient, device, mqtt_state, rest_state
-from tests.test_location import POSE, RECEIVED, RECEIVED_AT, decode
+from tests.test_location import FULL_TASK, POSE, RECEIVED, RECEIVED_AT, decode
 
 DETAIL_KEYS = {
     "mqtt_state", "mqtt_raw_state", "mqtt_battery", "mqtt_timestamp",
@@ -180,6 +180,61 @@ class CoordinatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.coordinator.is_group_restored("task"))
         self.assertFalse(self.coordinator.is_group_restored("progress"))
         self.assertEqual(self.coordinator.get_device_location().progress_percent, 100.0)
+
+    def test_the_entry_stream_ends_a_restore_the_record_cannot_show(self):
+        # An untimed report repeating the restored values: the record looks
+        # unchanged, the entry's type says it is live.
+        self.coordinator.restore_location("task", {"current_zone": 2})
+        self.coordinator.restore_location("progress", {"route_progress": 10000})
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        for message in decode({"type": 2, "currentMowBoundary": 2, "currentMowProgress": 10000}, decoder=decoder):
+            self.coordinator.ingest_state(mqtt_state(location=message.location))
+            self.assertTrue(self.coordinator.is_group_restored("task"))  # the record alone cannot tell
+            self.coordinator.note_location_entry(message)
+        self.assertFalse(self.coordinator.is_group_restored("task"))
+        self.assertFalse(self.coordinator.is_group_restored("progress"))
+        self.assertEqual(len(self.published), 4)  # two restores, the state, the entry
+
+    def test_a_task_entry_without_the_route_reading_leaves_the_progress_restored_on_the_entry_path(self):
+        self.coordinator.restore_location("task", {"current_zone": 2})
+        self.coordinator.restore_location("progress", {"route_progress": 10000})
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        for message in decode({"type": 2, "currentMowBoundary": 2}, decoder=decoder):
+            self.coordinator.ingest_state(mqtt_state(location=message.location))
+            self.coordinator.note_location_entry(message)
+        self.assertFalse(self.coordinator.is_group_restored("task"))
+        self.assertTrue(self.coordinator.is_group_restored("progress"))
+
+    def test_an_entry_whose_record_the_state_carried_publishes_nothing_more(self):
+        for message in decode(POSE, FULL_TASK):
+            self.coordinator.ingest_state(mqtt_state(location=message.location))
+            self.coordinator.note_location_entry(message)
+        self.assertEqual(len(self.published), 2)  # one per state, none per entry
+        self.assertTrue(self.coordinator.has_task_report())
+
+    def test_an_untimed_null_route_reading_is_still_a_task_report(self):
+        for message in decode({"type": 2, "currentMowProgress": None}):
+            self.coordinator.ingest_state(mqtt_state(location=message.location))
+            self.coordinator.note_location_entry(message)
+        self.assertTrue(self.coordinator.has_task_report())
+
+    def test_entries_before_any_status_are_applied_from_the_entry_stream(self):
+        # The connect's poll failed and no state message has come: the client
+        # builds no state, and the entries still reach the record and the sensors.
+        poses = [
+            {**POSE, "postureX": f"{i}.000", "time": 1700000000000 + 2000 * i}
+            for i in range(1, 4)
+        ]
+        for message in decode(*poses):
+            self.coordinator.note_location_entry(message)
+        self.assertEqual([data["location"].x for data in self.published], [1.0, 2.0, 3.0])
+        self.assertIsNone(self.coordinator.get_device_state())
+        # the first state then carries the same record: nothing is applied twice
+        self.coordinator.ingest_state(rest_state(location=self.coordinator.get_device_location()))
+        self.assertEqual(len(self.published), 4)
+        self.assertEqual(self.coordinator.get_device_location().x, 3.0)
 
     def test_an_untimed_zone_change_ends_the_restore_of_the_task(self):
         self.coordinator.restore_location("task", {"current_zone": 3, "task_at": 1700000000000})

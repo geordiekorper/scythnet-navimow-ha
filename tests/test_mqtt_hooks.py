@@ -24,7 +24,7 @@ from mower_sdk.errors import MowerTransportError
 from mower_sdk.models import Device, DeviceStatus, MqttConnectionInfo
 from mower_sdk.navimow_client import NavimowClient
 
-from custom_components.navimow import error_handler, status_observer
+from custom_components.navimow import error_handler, facade_hooks, status_observer
 from custom_components.navimow.coordinator import NavimowCoordinator
 from custom_components.navimow.health import CollectorHealth
 from tests.fakes import REST_PAYLOAD
@@ -105,7 +105,7 @@ class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
     async def connect(self):
         await self.client.async_connect()
         self.paho = self.client.mqtt.client
-        self.client.sdk.on_message_seen(lambda device_id, channel, at: self.health.note_message(device_id))
+        facade_hooks(self.client, self.health, {"dev-1": self.coordinator})
 
     async def settle(self):
         # The SDK hands each hook to the loop as a task: let it run.
@@ -245,6 +245,29 @@ class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
         await self.deliver("location", b'[{"type":1,"postureX":"1.5","postureY":"0.25","time":1700000002000}]')
         self.assertFalse(self.coordinator.is_group_restored("pose"))
         self.assertEqual(self.coordinator.get_device_location().x, 1.5)
+
+    async def test_poses_before_any_status_reach_the_sensors(self):
+        # The connect's poll fails; the feed delivers poses before any state
+        # message: the entries are applied from the facade's entry stream.
+        self.api.fail_polls = True
+        await self.connect()
+        self.assertEqual(self.health.status, "starting")
+        self.assertIsNone(self.coordinator.get_device_state())
+        seen = []
+        self.coordinator.async_add_listener(lambda: seen.append(self.coordinator.get_device_location().x))
+        await self.deliver("location", (
+            b'[{"type":1,"postureX":"1.0","postureY":"0.25","time":1700000000000},'
+            b'{"type":1,"postureX":"2.0","postureY":"0.25","time":1700000002000},'
+            b'{"type":1,"postureX":"3.0","postureY":"0.25","time":1700000004000}]'
+        ))
+        self.assertEqual(seen, [1.0, 2.0, 3.0])
+        self.assertIsNone(self.coordinator.get_device_state())  # still no status half
+        self.api.fail_polls = False
+        await self.client.async_poll()
+        self.assertEqual(self.coordinator.get_device_state().status.value, "docked")
+        self.assertEqual(self.coordinator.get_device_location().x, 3.0)
+        # the poll's own row (rest_status) and the state, both with the same record
+        self.assertEqual(seen, [1.0, 2.0, 3.0, 3.0, 3.0])
 
     async def test_a_poll_failure_shows_until_the_next_success(self):
         await self.connect()

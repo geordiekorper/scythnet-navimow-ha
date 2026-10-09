@@ -1,4 +1,5 @@
 """The Navimow integration."""
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -116,6 +117,25 @@ def error_handler(hass: HomeAssistant, entry: ConfigEntry, health: "CollectorHea
             entry.async_start_reauth(hass)
 
     return on_error
+
+
+def facade_hooks(client: Any, health: "CollectorHealth", coordinators: dict[str, Any]) -> None:
+    """Register on the SDK facade what the client does not forward, once the
+    client has built it: every message seen on a mower's topics, applied or
+    not, for the last_message sensor; and every applied location entry, the
+    coordinator's per-entry evidence (note_location_entry says why). Called
+    right after the connect returns, before the loop runs anything the feed
+    has queued, so no message is missed."""
+    sdk = client.sdk
+    sdk.on_message_seen(lambda device_id, channel, received_at: health.note_message(device_id))
+
+    @callback
+    def on_location(message: Any) -> None:
+        coordinator = coordinators.get(message.device_id)
+        if coordinator is not None:
+            coordinator.note_location_entry(message)
+
+    sdk.on_location(on_location)
 
 
 def status_observer(
@@ -263,13 +283,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for coordinator in coordinators.values():
             coordinator.async_finish_restore()
         await _async_connect_or_undo(hass, entry, client)
-        # Every message on a mower's topics, applied or not, for the
-        # last_message sensor. Registered after the connect, since the SDK
-        # exists only then; a message in between is still timed by the SDK
-        # and shown at the sensor's next write.
-        client.sdk.on_message_seen(
-            lambda device_id, channel, received_at: health.note_message(device_id)
-        )
+        facade_hooks(client, health, coordinators)
         entry.async_on_unload(entry.add_update_listener(_async_options_updated))
         async_setup_services(hass)
         # A suggestion, as a repair issue the owner can ignore: the entities
@@ -296,10 +310,25 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
     cloud's or Home Assistant's own, become ConfigEntryAuthFailed; anything
     else the cloud did (a request that failed, a credential reply without a
     WebSocket path) is retried as ConfigEntryNotReady.
+
+    The connect is shielded from the cancellation: part of it runs in an
+    executor thread (the facade's build and its connect), which a cancelled
+    await cannot stop, and the client marks itself closed when its connect
+    is interrupted, after which its disconnect does nothing. So a cancelled
+    setup lets the connect end on its own, then disconnects the client it
+    completed, and only then unwinds.
     """
+    connect = asyncio.ensure_future(client.async_connect())
     try:
-        await client.async_connect()
+        await asyncio.shield(connect)
     except BaseException as err:
+        if not connect.done():
+            try:
+                await connect
+            except BaseException:  # noqa: BLE001 - already unwinding; the undo below still runs
+                pass
+            else:
+                await client.async_disconnect()
         await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         if isinstance(err, MowerAuthRequiredError):

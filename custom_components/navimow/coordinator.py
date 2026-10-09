@@ -22,6 +22,7 @@ from mower_sdk.models import (
     DeviceAttributesMessage,
     DeviceEventMessage,
     DeviceLocation,
+    DeviceLocationMessage,
     DeviceStatus,
     REST_STATUS_KNOWN_FIELDS,
     RejectedMessage,
@@ -59,6 +60,9 @@ _GROUP_FIELDS: dict[str, tuple[str, ...]] = {
 # What a task entry leaves on the record: its time, the zone or the route
 # reading with theirs, and the rest of its fields.
 _TASK_EVIDENCE = ("task_at", "current_zone", "zone_at", "progress_at", *TASK_ATTRIBUTES.values())
+
+# The restored group each entry type replaces (a task entry: see note_location_entry).
+_ENTRY_GROUPS = {1: ("pose",), 3: ("target",), 4: ("delay",)}
 
 
 def _group_signature(group: str, location: DeviceLocation) -> tuple[Any, ...]:
@@ -190,6 +194,41 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if _has_task_fields(location):
             self._has_task = True
         self._last_location = location
+
+    @callback
+    def note_location_entry(self, message: DeviceLocationMessage) -> None:
+        """One applied entry of a location message (the SDK facade's
+        on_location), delivered after the state the client built from it.
+
+        Two things the state cannot tell. The entry's type ends the restore
+        of its group even when the entry repeats the restored values without
+        a time, where the record alone looks unchanged. And while the client
+        has no status half yet (the connect's poll failed and no state
+        message has come) it builds no state, so the entry's record is applied
+        here and the location sensors do not wait for the first status.
+        """
+        changed = False
+        if message.location is not self._last_location:
+            # Not the record the last state carried: the client built none.
+            self.apply_location(message.location)
+            changed = True
+        if message.entry_type == 2:
+            # A task entry replaces the progress reading only when it carried
+            # currentMowProgress (an explicit null counts).
+            groups: tuple[str, ...] = ("task", "progress") if "currentMowProgress" in (
+                message.raw or {}
+            ) else ("task",)
+            if not self._has_task:
+                self._has_task = True
+                changed = True
+        else:
+            groups = _ENTRY_GROUPS.get(message.entry_type, ())
+        for group in groups:
+            if group in self._restored_groups:
+                self._restored_groups.discard(group)
+                changed = True
+        if changed:
+            self.async_set_updated_data(self._build_data())
 
     @callback
     def note_rest_status(self, status: DeviceStatus, polled_at: datetime) -> None:

@@ -100,7 +100,7 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
             config_entries=SimpleNamespace(async_unload_platforms=AsyncMock(return_value=True)),
         )
         self.entry = SimpleNamespace(entry_id="e1")
-        self.client = SimpleNamespace(async_connect=AsyncMock())
+        self.client = SimpleNamespace(async_connect=AsyncMock(), async_disconnect=AsyncMock())
 
     def undone(self):
         self.hass.config_entries.async_unload_platforms.assert_awaited_once_with(self.entry, PLATFORMS)
@@ -137,18 +137,22 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(raised.exception.__cause__)  # Home Assistant's own, as it is
         self.undone()
 
-    async def test_a_cancelled_connect_undoes_and_stays_cancelled(self):
+    async def test_a_connect_the_client_gave_up_undoes_and_stays_cancelled(self):
         self.client.async_connect.side_effect = asyncio.CancelledError()
         with self.assertRaises(asyncio.CancelledError):
             await _async_connect_or_undo(self.hass, self.entry, self.client)
         self.undone()
+        self.client.async_disconnect.assert_not_awaited()  # nothing was connected
 
-    async def test_a_setup_cancelled_from_outside_undoes_too(self):
-        started = asyncio.Event()
+    async def test_a_setup_cancelled_during_the_connect_lets_it_end_then_disconnects(self):
+        # The client's connect works in an executor thread, which a cancelled
+        # await cannot stop: the connect is left to finish, then undone.
+        started, finished = asyncio.Event(), []
 
         async def connect():
             started.set()
-            await asyncio.sleep(60)
+            await asyncio.sleep(0.02)
+            finished.append(True)
 
         self.client.async_connect = connect
         task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
@@ -156,6 +160,25 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
+        self.assertEqual(finished, [True])
+        self.client.async_disconnect.assert_awaited_once()
+        self.undone()
+
+    async def test_a_setup_cancelled_during_a_connect_that_then_fails_undoes_without_a_disconnect(self):
+        started = asyncio.Event()
+
+        async def connect():
+            started.set()
+            await asyncio.sleep(0.02)
+            raise MowerAPIError("down")
+
+        self.client.async_connect = connect
+        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
+        await started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.client.async_disconnect.assert_not_awaited()
         self.undone()
 
 
