@@ -165,6 +165,30 @@ class CoordinatorTest(unittest.IsolatedAsyncioTestCase):
         self.feed({"type": 2, "currentMowProgress": 5000})
         self.assertTrue(self.coordinator.has_task_report())
 
+    def test_an_untimed_zone_only_task_entry_is_a_task_report(self):
+        self.feed({"type": 2, "currentMowBoundary": 2})
+        self.assertTrue(self.coordinator.has_task_report())
+        self.assertEqual(self.coordinator.get_device_location().current_zone, 2)
+
+    def test_a_repeated_route_reading_ends_the_restore_of_the_progress(self):
+        self.coordinator.restore_location("task", {"current_zone": 2, "task_at": 1700000000000})
+        self.coordinator.restore_location("progress", {"route_progress": 10000})
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        # the mower confirms the same 100 % in a fresh, timed report
+        self.feed({"type": 2, "currentMowBoundary": 2, "currentMowProgress": 10000, "time": 1700000060000}, decoder=decoder)
+        self.assertFalse(self.coordinator.is_group_restored("task"))
+        self.assertFalse(self.coordinator.is_group_restored("progress"))
+        self.assertEqual(self.coordinator.get_device_location().progress_percent, 100.0)
+
+    def test_an_untimed_zone_change_ends_the_restore_of_the_task(self):
+        self.coordinator.restore_location("task", {"current_zone": 3, "task_at": 1700000000000})
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        self.feed({"type": 2, "currentMowBoundary": 2}, decoder=decoder)
+        self.assertFalse(self.coordinator.is_group_restored("task"))
+        self.assertEqual(self.coordinator.get_device_location().current_zone, 2)
+
     def test_the_delay_time_is_first_seen(self):
         later = datetime(2026, 9, 17, 20, 2, tzinfo=timezone.utc)
         decoder = LocationDecoder()
@@ -186,6 +210,17 @@ class CoordinatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.coordinator.get_dock_position(), {"x": 0.5, "y": 0.25, "n": 7})
         self.coordinator.ingest_state(mqtt_state(location=DeviceLocation(device_id="dev-1", x=1.0)))
         self.assertIsNone(self.coordinator.get_dock_position())
+
+    def test_one_restored_dock_coordinate_shows_on_its_own(self):
+        # Dock Y disabled, or without history: Dock X still restores its value.
+        self.coordinator.restore_location("dock", {"dock_x": 2.0, "dock_samples": 3})
+        self.assertEqual(self.coordinator.get_dock_position(), {"x": 2.0, "y": None, "n": 3})
+        decoder = LocationDecoder()
+        decoder.restore("dev-1", self.coordinator.get_device_location())
+        # the decoder has no estimate to continue: the next docked pose starts one
+        self.feed({**POSE, "postureX": "2.400", "postureY": "1.000", "vehicleState": 1}, decoder=decoder)
+        self.assertEqual(self.coordinator.get_dock_position(), {"x": 2.4, "y": 1.0, "n": 1})
+        self.assertFalse(self.coordinator.is_group_restored("dock"))
 
     # ---- the restore after a restart ---------------------------------------------
 

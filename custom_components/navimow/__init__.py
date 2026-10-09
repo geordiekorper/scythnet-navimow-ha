@@ -262,19 +262,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         for coordinator in coordinators.values():
             coordinator.async_finish_restore()
-        try:
-            await client.async_connect()
-        except Exception as err:
-            # Undo the platforms, so the retry sets them up again cleanly.
-            await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-            hass.data[DOMAIN].pop(entry.entry_id, None)
-            if isinstance(err, ConfigEntryAuthFailed):
-                raise
-            if isinstance(err, MowerAuthRequiredError):
-                raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
-            # MowerAPIError (a request failed), ValueError (a credential reply
-            # without a WebSocket path): the cloud's, so retried.
-            raise ConfigEntryNotReady(f"Failed to connect to the Navimow cloud: {err}") from err
+        await _async_connect_or_undo(hass, entry, client)
         # Every message on a mower's topics, applied or not, for the
         # last_message sensor. Registered after the connect, since the SDK
         # exists only then; a message in between is still timed by the SDK
@@ -295,6 +283,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:
         _LOGGER.exception("Error setting up Navimow integration: %s", err)
         raise ConfigEntryNotReady(f"Error setting up integration: {err}") from err
+
+
+async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client: Any) -> None:
+    """Connect the client; a connect that does not complete undoes the setup so far.
+
+    The platforms were forwarded and the entry's data stored before the
+    connect (the restore needs that order), so a connect that fails, or is
+    cancelled while Home Assistant shuts down or reloads, unloads them again
+    and drops the data before the error goes on: the retry then sets up
+    cleanly, and no entity outlives a failed setup. Refused credentials, the
+    cloud's or Home Assistant's own, become ConfigEntryAuthFailed; anything
+    else the cloud did (a request that failed, a credential reply without a
+    WebSocket path) is retried as ConfigEntryNotReady.
+    """
+    try:
+        await client.async_connect()
+    except BaseException as err:
+        await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        if isinstance(err, MowerAuthRequiredError):
+            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
+        if isinstance(err, (ConfigEntryAuthFailed, ConfigEntryNotReady)) or not isinstance(
+            err, Exception
+        ):
+            raise  # as it is: a refusal, or a cancellation
+        raise ConfigEntryNotReady(f"Failed to connect to the Navimow cloud: {err}") from err
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

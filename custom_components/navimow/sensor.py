@@ -106,7 +106,8 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         native_unit_of_measurement="m",
         icon="mdi:home-map-marker",
         value_fn=lambda c: (
-            round(d["x"], 2) if (d := c.get_dock_position()) and d.get("n") else None
+            round(d["x"], 2)
+            if (d := c.get_dock_position()) and d["x"] is not None and d.get("n") else None
         ),
     ),
     NavimowSensorEntityDescription(
@@ -115,7 +116,8 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         native_unit_of_measurement="m",
         icon="mdi:home-map-marker",
         value_fn=lambda c: (
-            round(d["y"], 2) if (d := c.get_dock_position()) and d.get("n") else None
+            round(d["y"], 2)
+            if (d := c.get_dock_position()) and d["y"] is not None and d.get("n") else None
         ),
     ),
     NavimowSensorEntityDescription(

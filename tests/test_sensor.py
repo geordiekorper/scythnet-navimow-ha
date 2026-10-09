@@ -364,10 +364,16 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertEqual((x.native_value, y.native_value), (2.1, 1.0))
         self.assertEqual(x.extra_state_attributes, {"samples": 2, "source": "live", "is_restored": False})
 
+    def test_one_dock_coordinate_restores_on_its_own(self):
+        x, y = self.dock_sensor("dock_x"), self.dock_sensor("dock_y")
+        self.coordinator.restore_location("dock", {"dock_x": 2.0, "dock_samples": 3})
+        self.assertEqual(x.native_value, 2.0)
+        self.assertIsNone(y.native_value)
+        self.assertEqual(x.extra_state_attributes, {"samples": 3, "source": "restored", "is_restored": True})
+
     def test_the_dock_restores_and_a_docked_pose_refines_it(self):
         x = self.dock_sensor("dock_x")
         self.coordinator.restore_location("dock", {"dock_x": 2.0, "dock_samples": 3})
-        self.assertIsNone(x.native_value)  # half an estimate shows nothing
         self.coordinator.restore_location("dock", {"dock_y": 1.0, "dock_samples": 3})
         self.assertEqual(x.native_value, 2.0)
         self.assertEqual(x.extra_state_attributes, {"samples": 3, "source": "restored", "is_restored": True})

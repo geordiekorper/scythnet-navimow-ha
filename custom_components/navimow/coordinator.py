@@ -41,32 +41,39 @@ _LOGGER = logging.getLogger(__name__)
 DATA_SOURCE_LABELS = {StateSource.MQTT: "mqtt_push", StateSource.REST: "http_fallback"}
 
 # The record fields each restored group stands for. A group stays restored
-# until a live record differs from the restored one in these fields: the SDK
-# refuses an entry older than the restored marks, so an entry it applies
-# moves at least one of them.
+# until a live record differs from the restored one in these fields. The
+# decoder stamps each field's time with the entry that carried it (task_at
+# for every task entry, zone_at and progress_at for the zone and the route
+# reading), so a timed entry moves at least one of them even when it repeats
+# the values, and the SDK refuses an entry older than the restored marks.
 _TASK_FIELDS = tuple(name for name in TASK_ATTRIBUTES.values() if name != "route_progress")
 _GROUP_FIELDS: dict[str, tuple[str, ...]] = {
     "pose": ("pose_at", "pose_received_at", "x", "y", "theta", "vehicle_state"),
-    "task": _TASK_FIELDS,
-    "progress": ("route_progress",),
+    "task": ("current_zone", "zone_at", *_TASK_FIELDS),
+    "progress": ("route_progress", "progress_at"),
     "target": ("target_at", "target_last_at", "partition_ids"),
     "delay": ("delay_received_at", "task_delay"),
     "dock": ("dock_x", "dock_y", "dock_theta", "dock_at", "dock_samples"),
 }
+
+# What a task entry leaves on the record: its time, the zone or the route
+# reading with theirs, and the rest of its fields.
+_TASK_EVIDENCE = ("task_at", "current_zone", "zone_at", "progress_at", *TASK_ATTRIBUTES.values())
 
 
 def _group_signature(group: str, location: DeviceLocation) -> tuple[Any, ...]:
     fields = tuple(getattr(location, name) for name in _GROUP_FIELDS[group])
     if group == "progress":
         # An entry that carries currentMowProgress, an explicit null included,
-        # changes the reading or its source.
+        # changes the reading, its time or its source.
         fields += (location.progress_source,)
     return fields
 
 
 def _has_task_fields(location: DeviceLocation) -> bool:
+    """Whether a task entry has been applied to the record (or restored)."""
     return location.marks.get(2) is not None or any(
-        getattr(location, name) is not None for name in TASK_ATTRIBUTES.values()
+        getattr(location, name) is not None for name in _TASK_EVIDENCE
     )
 
 
@@ -304,9 +311,16 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self.device
 
     def get_dock_position(self) -> dict | None:
-        """The dock the SDK learned from docked poses {"x","y","n"}, or None."""
+        """The dock the SDK learned from docked poses, {"x","y","n"}, or None.
+
+        A coordinate may be None on its own: the two dock sensors restore
+        each their own, and one of them may be disabled or have no history.
+        The decoder treats such a half estimate as none and replaces it at
+        the next docked pose; until then the sensor that restored shows its
+        value, as it did before.
+        """
         loc = self._last_location
-        if loc is None or loc.dock_x is None or loc.dock_y is None:
+        if loc is None or (loc.dock_x is None and loc.dock_y is None):
             return None
         return {"x": loc.dock_x, "y": loc.dock_y, "n": loc.dock_samples}
 

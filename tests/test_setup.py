@@ -1,15 +1,23 @@
 """The setup's glue around the client: the token provider, the error handler
 and the status observer."""
+import asyncio
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from mower_sdk.errors import MowerAuthRequiredError, MowerTransportError
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from mower_sdk.errors import MowerAPIError, MowerAuthRequiredError, MowerTransportError
 from mower_sdk.models import DeviceStatus
 
-from custom_components.navimow import error_handler, status_observer, token_provider
+from custom_components.navimow import (
+    PLATFORMS,
+    _async_connect_or_undo,
+    error_handler,
+    status_observer,
+    token_provider,
+)
+from custom_components.navimow.const import DOMAIN
 from custom_components.navimow.health import CollectorHealth
 from tests.fakes import REST_PAYLOAD
 
@@ -80,6 +88,75 @@ class ErrorHandlerTest(unittest.TestCase):
         with self.assertLogs(LOGGER, level="ERROR"):
             self.on_error("recovery", ConfigEntryAuthFailed("refresh refused"))
         self.entry.async_start_reauth.assert_called_once_with(self.hass)
+
+
+class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
+    """The platforms are forwarded and the data stored before the connect;
+    a connect that does not complete undoes both."""
+
+    def setUp(self):
+        self.hass = SimpleNamespace(
+            data={DOMAIN: {"e1": {"client": object()}}},
+            config_entries=SimpleNamespace(async_unload_platforms=AsyncMock(return_value=True)),
+        )
+        self.entry = SimpleNamespace(entry_id="e1")
+        self.client = SimpleNamespace(async_connect=AsyncMock())
+
+    def undone(self):
+        self.hass.config_entries.async_unload_platforms.assert_awaited_once_with(self.entry, PLATFORMS)
+        self.assertNotIn("e1", self.hass.data[DOMAIN])
+
+    async def test_a_connect_that_completes_leaves_everything_in_place(self):
+        await _async_connect_or_undo(self.hass, self.entry, self.client)
+        self.hass.config_entries.async_unload_platforms.assert_not_awaited()
+        self.assertIn("e1", self.hass.data[DOMAIN])
+
+    async def test_a_failed_request_undoes_and_retries(self):
+        self.client.async_connect.side_effect = MowerAPIError("down")
+        with self.assertRaises(ConfigEntryNotReady) as raised:
+            await _async_connect_or_undo(self.hass, self.entry, self.client)
+        self.assertIsInstance(raised.exception.__cause__, MowerAPIError)
+        self.undone()
+
+    async def test_a_credential_reply_the_sdk_refuses_undoes_and_retries(self):
+        self.client.async_connect.side_effect = ValueError("no WebSocket path")
+        with self.assertRaises(ConfigEntryNotReady):
+            await _async_connect_or_undo(self.hass, self.entry, self.client)
+        self.undone()
+
+    async def test_refused_credentials_undo_and_start_reauth(self):
+        self.client.async_connect.side_effect = MowerAuthRequiredError("expired")
+        with self.assertRaises(ConfigEntryAuthFailed):
+            await _async_connect_or_undo(self.hass, self.entry, self.client)
+        self.undone()
+        self.hass.data[DOMAIN]["e1"] = {}
+        self.hass.config_entries.async_unload_platforms.reset_mock()
+        self.client.async_connect.side_effect = ConfigEntryAuthFailed("refresh refused")
+        with self.assertRaises(ConfigEntryAuthFailed) as raised:
+            await _async_connect_or_undo(self.hass, self.entry, self.client)
+        self.assertIsNone(raised.exception.__cause__)  # Home Assistant's own, as it is
+        self.undone()
+
+    async def test_a_cancelled_connect_undoes_and_stays_cancelled(self):
+        self.client.async_connect.side_effect = asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):
+            await _async_connect_or_undo(self.hass, self.entry, self.client)
+        self.undone()
+
+    async def test_a_setup_cancelled_from_outside_undoes_too(self):
+        started = asyncio.Event()
+
+        async def connect():
+            started.set()
+            await asyncio.sleep(60)
+
+        self.client.async_connect = connect
+        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
+        await started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.undone()
 
 
 class StatusObserverTest(unittest.TestCase):
