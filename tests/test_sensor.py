@@ -14,6 +14,7 @@ from custom_components.navimow.coordinator import NavimowCoordinator
 from custom_components.navimow.sensor import (
     RESTORING_KEYS,
     SENSOR_DESCRIPTIONS,
+    NavimowDockSensor,
     NavimowLocationSensor,
     NavimowSensor,
 )
@@ -32,9 +33,11 @@ class FakeCoordinator:
     with the rest stubbed."""
 
     apply_location = NavimowCoordinator.apply_location
+    restore_location = NavimowCoordinator.restore_location
     is_group_restored = NavimowCoordinator.is_group_restored
     has_task_report = NavimowCoordinator.has_task_report
     get_delay_since = NavimowCoordinator.get_delay_since
+    get_dock_position = NavimowCoordinator.get_dock_position
 
     def __init__(self):
         self.device = SimpleNamespace(
@@ -43,6 +46,7 @@ class FakeCoordinator:
         )
         self._last_location = None
         self._restored_location = None
+        self._restored_fields = {}
         self._restored_groups = set()
         self._has_task = False
         self._delay_since = None
@@ -59,9 +63,6 @@ class FakeCoordinator:
 
     def get_device_state(self):
         return self.state
-
-    def get_dock_position(self):
-        return None
 
     def get_data_source(self):
         return "mqtt_push"
@@ -349,15 +350,42 @@ class SensorAttributesTest(unittest.TestCase):
         for key in ("zone", "mowing_zone", "mow_progress", "position_x"):
             self.assertIsNone(self.sensor(key).extra_state_attributes, key)
 
+    def dock_sensor(self, key):
+        return NavimowDockSensor(coordinator=self.coordinator, entity_description=DESCRIPTIONS[key])
+
+    def test_the_dock_is_learned_from_docked_poses(self):
+        x, y = self.dock_sensor("dock_x"), self.dock_sensor("dock_y")
+        self.assertIsNone(x.native_value)
+        self.assertEqual(x.extra_state_attributes, {"samples": 0, "source": "none", "is_restored": False})
+        self.feed(POSE)  # out mowing: not a dock sample
+        self.assertIsNone(x.native_value)
+        self.feed({**POSE, "postureX": "2.000", "postureY": "1.000", "vehicleState": 1, "time": 1700000002000})
+        self.feed({**POSE, "postureX": "2.200", "postureY": "1.000", "vehicleState": 2, "time": 1700000004000})
+        self.assertEqual((x.native_value, y.native_value), (2.1, 1.0))
+        self.assertEqual(x.extra_state_attributes, {"samples": 2, "source": "live", "is_restored": False})
+
+    def test_the_dock_restores_and_a_docked_pose_refines_it(self):
+        x = self.dock_sensor("dock_x")
+        self.coordinator.restore_location("dock", {"dock_x": 2.0, "dock_samples": 3})
+        self.assertIsNone(x.native_value)  # half an estimate shows nothing
+        self.coordinator.restore_location("dock", {"dock_y": 1.0, "dock_samples": 3})
+        self.assertEqual(x.native_value, 2.0)
+        self.assertEqual(x.extra_state_attributes, {"samples": 3, "source": "restored", "is_restored": True})
+        self.decoder.restore("dev-1", self.coordinator.get_device_location())
+        self.feed(POSE)  # a pose out on the lawn changes no dock field
+        self.assertTrue(x.extra_state_attributes["is_restored"])
+        self.feed({**POSE, "postureX": "2.400", "postureY": "1.000", "vehicleState": 1, "time": 1700000002000})
+        self.assertEqual(x.extra_state_attributes, {"samples": 4, "source": "live", "is_restored": False})
+        self.assertEqual(x.native_value, 2.1)
+
 
 class RestoreOnStartupTest(unittest.IsolatedAsyncioTestCase):
     def make_sensor(self, key):
         coordinator = FakeCoordinator()
         coordinator.restore_location = Mock()
         coordinator.async_add_listener = Mock(return_value=lambda: None)
-        sensor = NavimowLocationSensor(
-            coordinator=coordinator, entity_description=DESCRIPTIONS[key]
-        )
+        cls = NavimowDockSensor if key in ("dock_x", "dock_y") else NavimowLocationSensor
+        sensor = cls(coordinator=coordinator, entity_description=DESCRIPTIONS[key])
         return sensor, coordinator
 
     async def added(self, sensor, last):
@@ -390,6 +418,11 @@ class RestoreOnStartupTest(unittest.IsolatedAsyncioTestCase):
         coordinator.restore_location.assert_called_once_with(
             "delay", {"task_delay": False, "delay_received_at": None}
         )
+
+    async def test_dock_sensors_seed_the_dock_group(self):
+        sensor, coordinator = self.make_sensor("dock_x")
+        await self.added(sensor, State("sensor.dock_x", "2.07", {"samples": 12, "source": "live"}))
+        coordinator.restore_location.assert_called_once_with("dock", {"dock_x": 2.07, "dock_samples": 12})
 
     async def test_nothing_recorded_means_nothing_restored(self):
         sensor, coordinator = self.make_sensor("mowing_zone")

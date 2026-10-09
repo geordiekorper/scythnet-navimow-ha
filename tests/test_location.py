@@ -1,15 +1,14 @@
 """Location helpers around the SDK's record: the restore of the sensors'
-recorded states, and the target-zone state. The SDK decodes the channel."""
+recorded states. The SDK decodes the channel and infers the target zone."""
 import unittest
 from datetime import datetime
 
-from mower_sdk.location import LocationDecoder
+from mower_sdk.location import LocationDecoder, target_zone
 from mower_sdk.models import DeviceLocation
 
 from custom_components.navimow.location import (
     TASK_ATTRIBUTES,
     restore_location_groups,
-    target_zone,
 )
 
 # Shapes from the X430 capture (values invented, consistent with each other).
@@ -152,36 +151,42 @@ class TargetRestoreTest(unittest.TestCase):
         self.assertIs(restored("zone", "unknown", {"task_delay": False}).task_delay, False)
 
 
-class TargetZoneTest(unittest.TestCase):
-    NO_TARGET = {"time": 1700000242000, "type": 3}
-    ZONE_2 = {"partitionIds": [2], "time": 1700000000010, "type": 3}
+class DockRestoreTest(unittest.TestCase):
+    """Each dock sensor seeds its coordinate of the SDK's estimate, with the
+    sample count, so the decoder goes on averaging from the restored dock."""
 
-    def test_unknown_until_a_target_report_arrives(self):
-        self.assertIsNone(target_zone(None, "mowing"))
-        self.assertIsNone(target_zone(record(POSE), "mowing"))
+    def test_each_coordinate_restores_with_the_samples(self):
+        self.assertEqual(
+            restore_location_groups("dock_x", "2.07", {"samples": 12, "source": "live"}),
+            [("dock", {"dock_x": 2.07, "dock_samples": 12})],
+        )
+        self.assertEqual(
+            restore_location_groups("dock_y", "-0.5", {"samples": 12, "source": "live"}),
+            [("dock", {"dock_y": -0.5, "dock_samples": 12})],
+        )
 
-    def test_named_target_is_the_first_id(self):
-        location = record({"partitionIds": [7, 19], "time": 1700000000010, "type": 3})
-        self.assertEqual(target_zone(location, "mowing"), 7)
-        self.assertEqual(target_zone(location, "docked"), 7)
+    def test_a_value_without_samples_counts_as_one(self):
+        # The sensors of earlier releases recorded samples 0 after a restart.
+        self.assertEqual(
+            restore_location_groups("dock_x", "2.07", {"samples": 0, "source": "restored"}),
+            [("dock", {"dock_x": 2.07, "dock_samples": 1})],
+        )
+        self.assertEqual(restore_location_groups("dock_y", "1", {}), [("dock", {"dock_y": 1.0, "dock_samples": 1})])
 
-    def test_empty_target_while_mowing_or_paused_is_all(self):
-        location = record(self.NO_TARGET)
-        self.assertEqual(target_zone(location, "mowing"), "all")
-        self.assertEqual(target_zone(location, "paused"), "all")
-        self.assertEqual(target_zone(location, "Mowing"), "all")
+    def test_unknown_restores_nothing(self):
+        self.assertEqual(restore_location_groups("dock_x", "unknown", {"samples": 0}), [])
+        self.assertEqual(restore_location_groups("dock_y", None, {}), [])
 
-    def test_empty_target_otherwise_is_none(self):
-        location = record(self.NO_TARGET)
-        for activity in ("docked", "charging", "idle", "returning", "error", "", None):
-            self.assertEqual(target_zone(location, activity), "none", activity)
-
-    def test_empty_list_counts_as_no_target(self):
-        location = record({"partitionIds": [], "time": 1700000000010, "type": 3})
-        self.assertEqual(target_zone(location, "docked"), "none")
-
-    def test_dock_command_clears_a_named_target(self):
+    def test_the_two_assemble_one_estimate_the_decoder_continues(self):
+        fields = {}
+        for key, state in (("dock_x", "2.0"), ("dock_y", "1.0")):
+            for _, group in restore_location_groups(key, state, {"samples": 3}):
+                fields.update(group)
+        location = DeviceLocation.from_dict({**fields, "device_id": "dev-1"})
         decoder = LocationDecoder()
-        decode(self.ZONE_2, decoder=decoder)
-        location = decode(self.NO_TARGET, decoder=decoder)[-1].location
-        self.assertEqual(target_zone(location, "returning"), "none")
+        decoder.restore("dev-1", location)
+        docked = {**POSE, "postureX": "2.4", "postureY": "1.0", "vehicleState": 1}
+        record = decode(docked, decoder=decoder)[-1].location
+        self.assertEqual(record.dock_samples, 4)
+        self.assertAlmostEqual(record.dock_x, 2.1)  # the mean of three at 2.0 and one at 2.4
+

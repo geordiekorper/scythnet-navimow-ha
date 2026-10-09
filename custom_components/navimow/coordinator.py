@@ -51,6 +51,7 @@ _GROUP_FIELDS: dict[str, tuple[str, ...]] = {
     "progress": ("route_progress",),
     "target": ("target_at", "target_last_at", "partition_ids"),
     "delay": ("delay_received_at", "task_delay"),
+    "dock": ("dock_x", "dock_y", "dock_theta", "dock_at", "dock_samples"),
 }
 
 

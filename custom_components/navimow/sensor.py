@@ -8,7 +8,6 @@ from datetime import datetime
 from typing import Any, Callable
 
 from homeassistant.components.sensor import (
-    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -27,11 +26,13 @@ from .const import DOMAIN, LAST_MESSAGE_RESOLUTION
 from .coordinator import NavimowCoordinator
 from .entity import device_info
 from .health import CollectorHealth
+from mower_sdk.location import target_zone
+
 from .location import (
+    DOCK_KEYS,
     POSE_SOURCE,
     TASK_ATTRIBUTES,
     restore_location_groups,
-    target_zone,
 )
 
 
@@ -61,9 +62,11 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         key="zone",
         name="Zone",
         icon="mdi:map-marker",
+        # The SDK's inference: the first id of a report that names zones;
+        # for an empty report, all while the mower mows or pauses, else none.
         value_fn=lambda c: target_zone(
             c.get_device_location(),
-            state.status.value if (state := c.get_device_state()) else None,
+            state.status if (state := c.get_device_state()) else None,
         ),
     ),
     NavimowSensorEntityDescription(
@@ -161,7 +164,7 @@ async def async_setup_entry(
     for device in devices:
         coordinator = coordinators[device.id]
         for description in SENSOR_DESCRIPTIONS:
-            if description.key in ("dock_x", "dock_y"):
+            if description.key in DOCK_KEYS:
                 cls = NavimowDockSensor
             elif description.key in RESTORING_KEYS:
                 cls = NavimowLocationSensor
@@ -305,37 +308,24 @@ class NavimowLocationSensor(NavimowSensor, RestoreEntity):
             self.coordinator.restore_location(group, fields)
 
 
-class NavimowDockSensor(NavimowSensor, RestoreSensor):
-    """Dock position sensor that survives HA restarts.
+class NavimowDockSensor(NavimowLocationSensor):
+    """One coordinate of the dock's position, as the SDK's decoder learns it
+    from the poses the mower sends while docked or charging.
 
-    The dock estimate is learned in-memory by the coordinator while the mower
-    is docked/charging. After a restart, the previously learned value is
-    restored from HA's state storage and shown until live samples replace it.
+    The estimate lives on the location record, so it restores like the other
+    location groups: each dock sensor seeds its coordinate and the sample
+    count, the decoder goes on averaging from them, and ``is_restored``
+    stays true until a live docked pose has refined the estimate.
     """
-
-    _restored_value: float | None = None
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        if (data := await self.async_get_last_sensor_data()) is not None:
-            try:
-                self._restored_value = float(data.native_value)
-            except (TypeError, ValueError):
-                self._restored_value = None
-
-    @property
-    def native_value(self) -> Any:
-        live = self.entity_description.value_fn(self.coordinator)
-        return live if live is not None else self._restored_value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         d = self.coordinator.get_dock_position()
+        restored = self.coordinator.is_group_restored("dock")
         return {
             "samples": (d or {}).get("n", 0),
-            "source": "live" if d and d.get("n") else (
-                "restored" if self._restored_value is not None else "none"
-            ),
+            "source": "restored" if restored else ("live" if d and d.get("n") else "none"),
+            "is_restored": restored,
         }
 
 
