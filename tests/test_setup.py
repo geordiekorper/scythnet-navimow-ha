@@ -164,6 +164,24 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
         self.client.async_disconnect.assert_awaited_once()
         self.undone()
 
+    async def test_a_cancel_that_lands_as_the_connect_completes_still_disconnects(self):
+        # The connect returned, our task has not resumed yet, and the cancel
+        # arrives: the client is connected and must be disconnected.
+        finished = asyncio.Event()
+
+        async def connect():
+            await asyncio.sleep(0)
+            finished.set()
+
+        self.client.async_connect = connect
+        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
+        await finished.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.client.async_disconnect.assert_awaited_once()
+        self.undone()
+
     async def test_a_setup_cancelled_during_a_connect_that_then_fails_undoes_without_a_disconnect(self):
         started = asyncio.Event()
 

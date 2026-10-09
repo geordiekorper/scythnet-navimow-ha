@@ -38,6 +38,7 @@ from .retention import (
 if sdk_check.PROBLEM is None:
     from mower_sdk.errors import MowerAuthRequiredError
     from mower_sdk.navimow_client import NavimowClient
+    from mower_sdk.watchdog import MqttWatchdog
 
     from .coordinator import NavimowCoordinator
     from .health import CollectorHealth
@@ -119,14 +120,14 @@ def error_handler(hass: HomeAssistant, entry: ConfigEntry, health: "CollectorHea
     return on_error
 
 
-def facade_hooks(client: Any, health: "CollectorHealth", coordinators: dict[str, Any]) -> None:
-    """Register on the SDK facade what the client does not forward, once the
-    client has built it: every message seen on a mower's topics, applied or
-    not, for the last_message sensor; and every applied location entry, the
-    coordinator's per-entry evidence (note_location_entry says why). Called
-    right after the connect returns, before the loop runs anything the feed
-    has queued, so no message is missed."""
-    sdk = client.sdk
+def facade_hooks(sdk: Any, health: "CollectorHealth", coordinators: dict[str, Any]) -> None:
+    """Register on the SDK facade what the client does not forward: every
+    message seen on a mower's topics, applied or not, for the last_message
+    sensor; and every applied location entry, the coordinator's per-entry
+    evidence (note_location_entry says why). The facade calls both on the
+    event loop, the entry callback after the client's own handler for the
+    same entry, so the state built from it has reached the coordinator first.
+    """
     sdk.on_message_seen(lambda device_id, channel, received_at: health.note_message(device_id))
 
     @callback
@@ -136,6 +137,23 @@ def facade_hooks(client: Any, health: "CollectorHealth", coordinators: dict[str,
             coordinator.note_location_entry(message)
 
     sdk.on_location(on_location)
+
+
+def watchdog_factory(
+    health: "CollectorHealth", coordinators: dict[str, Any]
+) -> Callable[[Any], Any]:
+    """The client's watchdog factory, which the client calls with the facade
+    the moment it has built it, before the feed connects: the one point at
+    which hooks can be put on the facade so that no message, not even one
+    that arrives while the connect is still under way, is missed. It
+    registers the facade hooks and returns the SDK's own watchdog with its
+    defaults, as the client would have built it."""
+
+    def factory(sdk: Any) -> Any:
+        facade_hooks(sdk, health, coordinators)
+        return MqttWatchdog(sdk)
+
+    return factory
 
 
 def status_observer(
@@ -235,6 +253,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Assistant through the provider. Built before its callbacks are
         # registered and connected after, so nothing is missed.
         health = CollectorHealth()
+        # device id -> coordinator, filled below; the hooks read it later.
+        coordinators: dict[str, NavimowCoordinator] = {}
         poll_interval = entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS)
         client = NavimowClient(
             api,
@@ -244,6 +264,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             poll_interval=poll_interval,
             reconnect_min_delay=1,
             reconnect_max_delay=60,
+            watchdog=watchdog_factory(health, coordinators),
         )
         health.client = client
         health.poll_interval = poll_interval
@@ -256,7 +277,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         client.on_rebuild_request(_on_rebuild_request)
 
-        coordinators: dict[str, NavimowCoordinator] = {}
         for device in devices:
             coordinator = NavimowCoordinator(
                 hass=hass, client=client, device=device, config_entry=entry
@@ -283,7 +303,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for coordinator in coordinators.values():
             coordinator.async_finish_restore()
         await _async_connect_or_undo(hass, entry, client)
-        facade_hooks(client, health, coordinators)
         entry.async_on_unload(entry.add_update_listener(_async_options_updated))
         async_setup_services(hass)
         # A suggestion, as a repair issue the owner can ignore: the entities
@@ -315,8 +334,10 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
     executor thread (the facade's build and its connect), which a cancelled
     await cannot stop, and the client marks itself closed when its connect
     is interrupted, after which its disconnect does nothing. So a cancelled
-    setup lets the connect end on its own, then disconnects the client it
-    completed, and only then unwinds.
+    setup lets the connect end on its own (shielded again, so a second
+    cancellation does not interrupt the client either), disconnects the
+    client when the connect completed, whether before or after the
+    cancellation arrived, and only then unwinds.
     """
     connect = asyncio.ensure_future(client.async_connect())
     try:
@@ -324,11 +345,14 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
     except BaseException as err:
         if not connect.done():
             try:
-                await connect
-            except BaseException:  # noqa: BLE001 - already unwinding; the undo below still runs
+                await asyncio.shield(connect)
+            except BaseException:  # noqa: BLE001 - its failure, or a second cancellation
                 pass
-            else:
-                await client.async_disconnect()
+        if connect.done() and not connect.cancelled() and connect.exception() is None:
+            # Completed, before or after the cancellation: stop what it started.
+            await asyncio.shield(client.async_disconnect())
+        elif not connect.done():
+            _LOGGER.warning("Navimow setup cancelled twice; the connect may still be running")
         await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         if isinstance(err, MowerAuthRequiredError):

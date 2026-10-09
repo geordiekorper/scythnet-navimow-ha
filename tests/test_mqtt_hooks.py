@@ -24,7 +24,7 @@ from mower_sdk.errors import MowerTransportError
 from mower_sdk.models import Device, DeviceStatus, MqttConnectionInfo
 from mower_sdk.navimow_client import NavimowClient
 
-from custom_components.navimow import error_handler, facade_hooks, status_observer
+from custom_components.navimow import error_handler, status_observer, watchdog_factory
 from custom_components.navimow.coordinator import NavimowCoordinator
 from custom_components.navimow.health import CollectorHealth
 from tests.fakes import REST_PAYLOAD
@@ -46,6 +46,7 @@ class FakeAPI:
         self.polls = 0
         self.info_requests = 0
         self.on_statuses = None
+        self.during_poll = None  # a callable run at each poll, before its outcome
 
     def set_token(self, token):
         self.token = token
@@ -64,6 +65,8 @@ class FakeAPI:
 
     async def async_get_device_statuses(self, device_ids):
         self.polls += 1
+        if self.during_poll is not None:
+            self.during_poll()
         if self.fail_polls:
             raise MowerTransportError("down")
         if self.on_statuses is not None:
@@ -80,9 +83,11 @@ class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
         self.api = FakeAPI()
         self.health = CollectorHealth()
         self.entry = SimpleNamespace(async_start_reauth=lambda hass: None)
+        self.coordinators = {}
         self.client = NavimowClient(
             self.api, devices=[DEVICE], loop=asyncio.get_running_loop(),
             poll_interval=None, reconnect_min_delay=1, reconnect_max_delay=60,
+            watchdog=watchdog_factory(self.health, self.coordinators),
         )
         self.health.client = self.client
         self.client.on_connection(self.health.note_connection)
@@ -91,7 +96,8 @@ class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
             hass=self.hass, client=self.client, device=DEVICE, config_entry=None
         )
         self.coordinator.async_register()
-        self.api.on_statuses = status_observer({"dev-1": self.coordinator}, self.health)
+        self.coordinators["dev-1"] = self.coordinator
+        self.api.on_statuses = status_observer(self.coordinators, self.health)
         self.patches = [
             patch.object(paho.Client, "connect_async"),
             patch.object(paho.Client, "loop_start"),
@@ -105,7 +111,6 @@ class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
     async def connect(self):
         await self.client.async_connect()
         self.paho = self.client.mqtt.client
-        facade_hooks(self.client, self.health, {"dev-1": self.coordinator})
 
     async def settle(self):
         # The SDK hands each hook to the loop as a task: let it run.
@@ -268,6 +273,28 @@ class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.coordinator.get_device_location().x, 3.0)
         # the poll's own row (rest_status) and the state, both with the same record
         self.assertEqual(seen, [1.0, 2.0, 3.0, 3.0, 3.0])
+
+    async def test_a_pose_arriving_during_the_connect_is_not_missed(self):
+        # The facade exists before the connect's poll; a pose the feed delivers
+        # while the connect is still under way, with that poll failing, reaches
+        # the sensors: the hooks went on the facade at its build.
+        self.api.fail_polls = True
+        heard = []
+        self.health.async_add_message_listener(heard.append)
+
+        def pose_during_the_startup_poll():
+            paho = self.client.sdk.mqtt.client
+            paho.on_message(paho, None, SimpleNamespace(
+                topic="/downlink/vehicle/dev-1/realtimeDate/location",
+                payload=b'[{"type":1,"postureX":"1.5","postureY":"0.25","time":1700000000000}]',
+            ))
+
+        self.api.during_poll = pose_during_the_startup_poll
+        await self.connect()
+        await self.settle()
+        self.assertIsNone(self.coordinator.get_device_state())
+        self.assertEqual(self.coordinator.get_device_location().x, 1.5)
+        self.assertEqual(heard, ["dev-1"])
 
     async def test_a_poll_failure_shows_until_the_next_success(self):
         await self.connect()
