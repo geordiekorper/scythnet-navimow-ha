@@ -34,10 +34,14 @@ MQTT_PASSWORD: Final | None = None
 # 更新间隔（秒）
 UPDATE_INTERVAL: Final = 30
 
-# Steady REST status poll (rest_poll.py): interval, the floor an option may
-# set, and the longest wait after repeated failures (seconds).
-REST_POLL_SECONDS: Final = 120
-REST_POLL_MIN_SECONDS: Final = 30
+# Steady REST status poll (rest_poll.py): the default interval, the floor an
+# option may set, and the longest wait after repeated failures (seconds).
+# 300 s and 60 s are the owner's decision of 8 Oct 2026 (bead lrh): the
+# cloud's limit on the status endpoint is unknown and an edition multiplies
+# the calls by its installs; an install that wants Scythnet's cadence sets
+# 120 s in the options.
+REST_POLL_SECONDS: Final = 300
+REST_POLL_MIN_SECONDS: Final = 60
 REST_POLL_MAX_SECONDS: Final = 600  # the most the option allows
 CONF_REST_POLL_SECONDS: Final = "rest_poll_seconds"  # entry option
 REST_POLL_MAX_BACKOFF: Final = 600

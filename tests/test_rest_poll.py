@@ -98,8 +98,8 @@ class RestPollerTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_interval_is_clamped_and_reschedules(self):
         self.poller.async_set_interval(10)
-        self.assertEqual(self.poller.interval, 30)
-        self.assertEqual(self.poller.next_delay, 30)
+        self.assertEqual(self.poller.interval, 60)
+        self.assertEqual(self.poller.next_delay, 60)
 
     async def test_stopped_poller_schedules_nothing(self):
         self.poller.async_stop()

@@ -62,6 +62,11 @@ official one. No entity, entity id or attribute name changes.
 - **Commands.** A command whose reply was lost, or came back as a server error or
   an unreadable reply, is reported `unconfirmed` (it may still have acted);
   refused credentials start reauthentication.
+- **REST poll default.** The steady status poll runs every 300 s by default,
+  where it ran every 120 s, and the option's floor is 60 s (it was 30 s); the
+  cap stays at 600 s. An install that wants the previous cadence sets 120 s in
+  the integration's options. The cloud's limit on the status endpoint is not
+  documented, and an edition multiplies the calls by its installs.
 
 ## [1.2.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.1.0...NavimowHA-v1.2.0) (2026-09-18)
 
