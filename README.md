@@ -43,13 +43,13 @@ entities built on it, giving you these **additional sensors** per mower
 | `sensor.<mower>_heading` | Mower orientation in degrees (0–360) |
 | `sensor.<mower>_mowing_zone` | Partition id the mower is *physically* mowing right now (works for "mow all" too). Attributes carry the rest of the mower's task report: `route_progress` (0–10000; the last route reading reported, kept when a later task entry omits it), `mowing_percentage`, `area_m2`, `week_area_m2`, `action`, `sub_action`, `mow_start_type`, `map_work_position`, `task_time_ms` |
 | `sensor.<mower>_mow_progress` | Planned-route progress for the current task as a percentage (the mower's 0–10000 route progress ÷ 100, falling back to its `mowingPercentage`); `unknown` until a task report arrives. Not area coverage. The `progress_source` attribute names the field used |
-| `sensor.<mower>_dock_x` / `_dock_y` | Dock position in meters — auto-learned by averaging the mower's pose while docked/charging; survives restarts. `unknown` until the mower has docked once. Used by the example map card to place the dock marker (the coordinate origin is **not** reliably the dock) |
+| `sensor.<mower>_dock_x` / `_dock_y` | Dock position in meters: the SDK's estimate, a capped running mean of the poses the mower sends while docked or charging (a dock moved by more than a metre replaces it after three agreeing poses). Restored after a restart as an estimate, so the averaging goes on from it; attributes `samples`, `source` (`live`, `restored`, `none`) and `is_restored`. `unknown` until the mower has docked once. Used by the example map card to place the dock marker (the coordinate origin is **not** reliably the dock) |
 | `binary_sensor.<mower>_cloud_connected` | Diagnostic: on while the MQTT connection to the Navimow cloud is up (shared by all mowers of the account). Attributes `client_id`, `connected_at`, `disconnected_at` and `disconnect_reason`, `connect_failed_at` and `connect_fail_reason` (a refused CONNACK, or a failure before one, e.g. a token rejected at the WebSocket upgrade). The reasons come from the SDK: `requested` for a disconnect asked for, the MQTT library's reason text otherwise, `refused: …` with that text for a refused CONNACK, `connection failed before CONNACK` for a failure before one |
 | `sensor.<mower>_last_message` | Diagnostic timestamp: when the last MQTT message for this mower arrived, on any channel. Written at most every 30 s (a mower that is out sends a pose every 2 s), never more than 30 s behind. With `cloud_connected` it tells a quiet mower from a stalled connection |
-| `sensor.<mower>_collector_status` | Diagnostic: the cloud session's health in one place (shared by all mowers of the account). State `ok`, `starting` (not connected yet), `disconnected`, or `poll_failing` (MQTT up, REST polls failing). Attributes count `connects`, `disconnects`, `connect_failures` and `rebuilds` since start-up (the SDK's own counters) and `credential_refreshes` (broker credentials fetched again after a failed connection attempt: a refused CONNACK, or a failure before one, at most once a minute), with `last_rebuild_reason`/`_at`, `poll_interval`, `last_poll_error`/`_at` and `token_expires_at`. Written only when one of these changes |
+| `sensor.<mower>_collector_status` | Diagnostic: the cloud session's health in one place (shared by all mowers of the account). State `ok`, `starting` (not connected yet), `disconnected`, or `poll_failing` (MQTT up, the last REST poll failed; cleared by the next poll that succeeds). Attributes count `connects`, `disconnects`, `connect_failures` and `rebuilds` since start-up (the SDK's own counters) and `credential_refreshes` (recoveries: a connect that followed a failed attempt, a refused CONNACK or a failure before one; the SDK's client fetches the broker credentials again after each refusal, at most once a minute), with `last_rebuild_reason`/`_at`, `poll_interval`, `last_poll_error`/`_at` and `token_expires_at`. Written only when one of these changes |
 | `sensor.<mower>_rest_status` | Diagnostic: the latest REST status reply as sent. State is the raw `vehicleState` (`isDocked`, `isRunning`, `isIdel`, …, not the mapped activity); attributes `battery`, `battery_level` (`LOW`…`FULL`), `polled_at`, and `unknown_fields` for anything the reply carries beyond the known fields. One recorder row per poll |
 | `sensor.<mower>_rejected_input` | Diagnostic: input received but not applied — late, implausibly stamped or placeholder entries, fields or channels no decoder knows, payloads that do not parse. The SDK judges the state and location messages; event and attributes messages are recorded whole as `unknown_channel` (no entity decodes them; attributes also show, as received, on the lawn mower entity's `attributes` attribute). State is a count since start-up; attributes describe the latest item: `channel`, `topic`, `reason` (`reasons` when several applied), `received_at`, `payload` (cut to 8 KB, `truncated` says so). The recorder keeps every item, so the full sequence can be read back from history |
-| `sensor.<mower>_data_source` | Diagnostic: which source supplied the current mower state (`mqtt_push`, `mqtt_cache`, `http_fallback`, `none`). Attributes hold the last MQTT state message and the last REST poll side by side (`mqtt_*`, `rest_*`), each with the device's own timestamp when it sent one and Home Assistant's receipt or poll time. REST status is polled every 300 s by default (60 to 600 s in the integration's options; 120 s is the cadence Scythnet's collector asks for) for all mowers in one call, whatever MQTT is doing (backing off to at most 10 min after failures); it becomes the shown state (`http_fallback`) only while MQTT has been silent for 5 min |
+| `sensor.<mower>_data_source` | Diagnostic: which source supplied the current mower state (`mqtt_push`, `http_fallback`, `none`; `mqtt_cache`, a message adopted from the SDK's cache, no longer occurs). Attributes hold the last MQTT state message and the last REST poll side by side (`mqtt_*`, `rest_*`), each with the device's own timestamp when it sent one and Home Assistant's receipt or poll time. The SDK's client polls the REST status every 300 s by default (60 to 600 s in the integration's options, a change reloading the integration; 120 s is the cadence Scythnet's collector asks for) for all mowers in one call, whatever MQTT is doing, backing off to at most 10 min after failures; it becomes the shown state (`http_fallback`) only while MQTT has been silent for 5 min |
 
 These unlock zone-aware and position-aware automations — for example opening a
 gate when the mower crosses between zones, geofencing, or live mapping. The
@@ -57,17 +57,25 @@ coordinates are a **local Cartesian grid in meters**, not latitude/longitude.
 
 ### How it works
 
+* The SDK's client owns the cloud session for the account: it polls the
+  status endpoint on its clock, runs the MQTT watchdog's two rules (a state
+  change the state channel missed; no pose for three minutes while the mower
+  runs) and rebuilds the connection when one fires, fetches the broker
+  credentials again after a refused connection, pushes each refreshed token
+  to the connection, and merges what MQTT pushes and what REST answers into
+  one state per mower. The integration gives it Home Assistant's token and
+  shows what it delivers.
 * The SDK subscribes to the `…/realtimeDate/location` topic for each device
   and decodes each message (a JSON array of entries keyed by `type`: `1` =
   pose, `2` = task, `3` = target zone, `4` = task delay) into one merged
   record per device, so a pose update never wipes the last-known zone. Late
   or implausibly stamped entries are rejected and recorded on
   `rejected_input`.
-* Each applied entry reaches the coordinator with the record as it stood
-  after it, and the sensors above read that record.
-* On a restart, the location sensors' last recorded states are handed back
-  to the SDK before the MQTT connection opens, so they show at once and a
-  late message older than them is still rejected.
+* Each new state reaches the coordinator with the location record as it
+  stood after the entry that made it, and the sensors above read that record.
+* On a restart, the location sensors' last recorded states are handed to the
+  client before it connects, so they show at once and a late message older
+  than them is still rejected.
 
 Because the location stream is delivered through Segway's cloud, these sensors
 update only while the mower is active and depend on internet connectivity. Build
@@ -118,11 +126,11 @@ Multiple mowers can be selected with a list of entity IDs.
 HA handles missing or unavailable entities using its standard targeting behavior;
 no command is sent to those entities.
 
-Mower controls and these actions refresh authentication before sending a command
-and request a state update afterward. Command submissions are logged at INFO level;
-submission failures at ERROR level. Each log identifies the command and device.
-State refresh failures do not fail an accepted command; Home Assistant reports
-coordinator update errors through its normal logging.
+Mower controls and these actions go through the SDK's client, which refreshes
+authentication before sending a command and polls the status 5 s later, whatever
+the reply. Command submissions are logged at INFO level; submission failures at
+ERROR level. Each log identifies the command and device. A failure of the poll
+that follows shows on `collector_status` and does not fail an accepted command.
 INFO messages require INFO logging to be enabled for `custom_components.navimow.commands`.
 
 Successful submission does not confirm that the mower completed the action; check
@@ -135,7 +143,7 @@ act and no error is raised), `error`, `sent_at` and `recorded_at`. `navimow.comm
 sends any of them by name (`command: start|pause|resume|stop|dock`) with the same
 response, for the three commands HA's `lawn_mower` actions cannot return one for. A command the
 cloud refuses raises an error as before. Every command sent is followed by a REST
-status poll 5 s later. A subsequent refresh failure is logged without failing the submitted action.
+status poll 5 s later, whose failure never fails the submitted action.
 Authentication failures before submission start the integration's reauthentication flow.
 Blade-height adjustment is unsupported. Requests log a warning with the device
 and requested height, then report an action error without sending a command.
@@ -200,8 +208,8 @@ re-authenticate.
 ### Requirements
 
 The integration requires the community edition of the Navimow SDK,
-[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community),
-which Home Assistant installs at the first start after the update. It and the
+[`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community)
+0.2.0a6 or later, which Home Assistant installs at the first start after the update. It and the
 upstream `navimow-sdk` (which earlier releases of this integration and the
 official integration pull in) both provide the `mower_sdk` package. Home
 Assistant never uninstalls a requirement, so both stay listed until the
@@ -231,7 +239,8 @@ update only during a mow. On startup each of these sensors restores its last
 recorded value and marks it `is_restored: true` until live data of the same kind
 replaces it, so a restart no longer blanks them. The dock sensors learn (and
 refine) the dock position *while* the mower sits docked/charging, keep their
-value across restarts, and read `unknown` only until the first docking after
+estimate across restarts (restored with its sample count, `is_restored` until a
+docked pose refines it), and read `unknown` only until the first docking after
 install — their `samples`/`source` attributes show the learning state.
 
 See the upstream [Getting Started](https://github.com/segwaynavimow/NavimowHA/wiki/Getting-Started)

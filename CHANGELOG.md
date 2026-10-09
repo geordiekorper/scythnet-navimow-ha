@@ -9,8 +9,9 @@
 
 The integration now runs on the community edition of the Navimow SDK,
 [`navimow-sdk-community`](https://github.com/geordiekorper/navimow-sdk-community)
-0.2.0a3 or later, which does in the SDK much of what this fork did around the
-official one. No entity, entity id or attribute name changes.
+0.2.0a6 or later, which does in the SDK much of what this fork did around the
+official one. No entity or entity id changes; one new attribute, `is_restored`
+on the dock sensors.
 
 - **Requirement and start-up check.** Home Assistant installs
   `navimow-sdk-community` at the first start after the update. It and the
@@ -72,6 +73,30 @@ official one. No entity, entity id or attribute name changes.
   suggesting 30 or more, since its entities are the mower's whole record. It is
   a warning that **Ignore** silences for good; it clears itself once the
   retention reaches 30 days. The README's installation section says the same.
+- **The SDK's client.** The integration builds one `NavimowClient` per
+  account, and the client does what three of the integration's modules did:
+  the status poll on its clock with its backoff, the MQTT watchdog's two
+  rules and the rebuild they ask for, the broker-credential refresh after a
+  refused connection, the token push, and the merge of what MQTT pushes and
+  what REST answers into one state per mower. `session.py`, `rest_poll.py`
+  and `watchdog.py` are gone (1,428 lines of the package deleted, 590
+  added; 49 tests whose behaviour the SDK's own suite pins). What shows:
+  `data_source` never reads `mqtt_cache` any more (the client registers its
+  handler before the feed connects); `credential_refreshes` on
+  `collector_status` counts recoveries, a connect that followed a failed
+  attempt; `poll_failing` clears the moment a poll succeeds; a change of the
+  poll interval reloads the integration instead of moving the running poller;
+  an account with no mower retries setup instead of setting up without
+  entities; refused credentials on the device list start reauthentication
+  instead of a retry. Every status reply still writes a `rest_status` row,
+  shown or not, and a command is still followed by a poll 5 s later.
+- **The dock survives a restart as an estimate.** The dock position is the
+  SDK's estimate, learned from the poses the mower sends while docked or
+  charging and carried on the location record; the dock sensors restore it
+  with its sample count like the other location sensors and show
+  `is_restored` until a live docked pose refines it. Before, only the shown
+  number was kept and the averaging started over. The target zone is the
+  SDK's inference now, by the same rule as before.
 
 ## [1.2.0](https://github.com/geordiekorper/scythnet-navimow-ha/compare/NavimowHA-v1.1.0...NavimowHA-v1.2.0) (2026-09-18)
 
