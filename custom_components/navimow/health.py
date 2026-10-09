@@ -1,21 +1,20 @@
 """Collector health: the state of the cloud connection, for diagnostics.
 
 Without it, a quiet mower and a collector that has stopped receiving look
-the same in history. One CollectorHealth per config entry follows the MQTT
-connection, and the diagnostic entities of every mower on the entry show
-it, so the recorder keeps the connection's history beside the mower's.
+the same in history. One CollectorHealth per config entry follows the SDK
+client's connection, and the diagnostic entities of every mower on the entry
+show it, so the recorder keeps the connection's history beside the mower's.
 
 The SDK's MQTT client counts connects, disconnects, failed connects and
 rebuilds, keeps the reason for each, and times every message per device and
-channel; CollectorHealth reads those from the client. What it keeps itself
-is what the SDK has no equivalent for: the connected flag as the client's
-hooks report it (note_connected and the others, called from those hooks),
-wall-clock stamps of the events, the credential refreshes, the token expiry,
-the REST poll's outcome, and the listeners.
+channel; CollectorHealth reads those from it (client.mqtt, None until the
+client has connected once). What it keeps itself is what the SDK has no
+equivalent for: the connected flag as the client's connection events report
+it, wall-clock stamps of the events, the recoveries from a refused
+connection, the token expiry, the REST poll's outcome, and the listeners.
 """
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -23,68 +22,81 @@ from typing import Any
 from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.util import dt as dt_util
 
+
 class CollectorHealth:
     """Connection state of one config entry's cloud session."""
 
-    def __init__(self, mqtt: Any) -> None:
-        # The SDK's NavimowMQTT: its counters, reasons, client id and message times.
-        self.mqtt = mqtt
+    def __init__(self, client: Any = None) -> None:
+        # The SDK's NavimowClient; its mqtt is the paho wrapper with the
+        # counters, reasons, client id and message times, None before the
+        # first connect. Set after construction when the client needs the
+        # health first (its token provider stamps the token expiry here).
+        self.client = client
         self.connected = False
         self.connected_at: str | None = None
         self.disconnected_at: str | None = None
         self.connect_failed_at: str | None = None
-        # When the client last connected (monotonic, for the watchdog).
-        self.connected_monotonic: float | None = None
+        # Recoveries: a connect that followed one or more failed attempts.
+        # The client fetches the broker credentials again after a refused
+        # connection, which is what the next successful connect shows.
         self.credential_refreshes = 0
+        self._failed_since_connect = False
         self.last_rebuild_at: str | None = None
         self._rebuilds_stamped = 0
         self.token_expires_at: str | None = None
-        # The entry's REST poller (rest_poll.py), for its latest outcome.
-        self.poller: Any = None
-        self._poll_outcome: tuple[str | None, str | None] = (None, None)
+        # The REST poll: its interval (the entry's option, set by the setup)
+        # and the latest failure, cleared by the next success.
+        self.poll_interval: int | None = None
+        self.last_poll_error: str | None = None
+        self.last_poll_error_at: str | None = None
         self._listeners: list[Callable[[], None]] = []
         self._message_listeners: list[Callable[[str], None]] = []
 
-    # Read from the SDK's client, which counts every client it builds.
+    @property
+    def mqtt(self) -> Any:
+        """The SDK's MQTT client, or None before the first connect."""
+        return None if self.client is None else self.client.mqtt
+
+    # Read from the SDK's client, which counts every paho client it builds.
     @property
     def connects(self) -> int:
-        return self.mqtt.connects
+        return self.mqtt.connects if self.mqtt is not None else 0
 
     @property
     def disconnects(self) -> int:
-        return self.mqtt.disconnects
+        return self.mqtt.disconnects if self.mqtt is not None else 0
 
     @property
     def connect_failures(self) -> int:
-        return self.mqtt.connect_failures
+        return self.mqtt.connect_failures if self.mqtt is not None else 0
 
     @property
     def rebuilds(self) -> int:
-        return self.mqtt.rebuilds
+        return self.mqtt.rebuilds if self.mqtt is not None else 0
 
     @property
     def last_rebuild_reason(self) -> str | None:
-        return self.mqtt.last_rebuild_reason
+        return self.mqtt.last_rebuild_reason if self.mqtt is not None else None
 
     @property
     def client_id(self) -> str | None:
-        return self.mqtt.client_id
+        return self.mqtt.client_id if self.mqtt is not None else None
 
     @property
     def disconnect_reason(self) -> str | None:
-        return self.mqtt.last_disconnect_reason
+        return self.mqtt.last_disconnect_reason if self.mqtt is not None else None
 
     @property
     def connect_fail_reason(self) -> str | None:
-        return self.mqtt.last_connect_fail_reason
+        return self.mqtt.last_connect_fail_reason if self.mqtt is not None else None
 
     def last_message_at(self, device_id: str) -> datetime | None:
         """When the last MQTT message for the device arrived, on any channel."""
-        return self.mqtt.last_message_at(device_id)
+        return self.mqtt.last_message_at(device_id) if self.mqtt is not None else None
 
     def location_age(self, device_id: str) -> float | None:
         """Seconds since the device's last location message, or None if none has come."""
-        return self.mqtt.last_message_age(device_id, "location")
+        return self.mqtt.last_message_age(device_id, "location") if self.mqtt is not None else None
 
     @callback
     def async_add_listener(self, update: Callable[[], None]) -> CALLBACK_TYPE:
@@ -121,13 +133,27 @@ class CollectorHealth:
         for update in list(self._listeners):
             update()
 
-    # Called from the client's hooks, which run after the client has counted
-    # the event and recorded its reason.
+    @callback
+    def note_connection(self, event: Any) -> None:
+        """One of the client's ConnectionEvents: connected, disconnected or
+        connect_failed. Registered with client.on_connection; the client has
+        counted the event and recorded its reason by then, and a rebuilt
+        client's connect shows up here too."""
+        if event.kind == "connected":
+            self.note_connected()
+        elif event.kind == "disconnected":
+            self.note_disconnected()
+        else:
+            self.note_connect_failed()
+        self.note_rebuild()
+
     @callback
     def note_connected(self) -> None:
         self.connected = True
-        self.connected_monotonic = time.monotonic()
         self.connected_at = dt_util.utcnow().isoformat()
+        if self._failed_since_connect:
+            self._failed_since_connect = False
+            self.credential_refreshes += 1
         self._notify()
 
     @callback
@@ -140,25 +166,19 @@ class CollectorHealth:
     def note_connect_failed(self) -> None:
         self.connected = False
         self.connect_failed_at = dt_util.utcnow().isoformat()
-        self._notify()
-
-    @callback
-    def note_credential_refresh(self) -> None:
-        """Fresh broker credentials were fetched after a disconnect."""
-        self.credential_refreshes += 1
+        self._failed_since_connect = True
         self._notify()
 
     @callback
     def note_rebuild(self) -> None:
         """Stamp last_rebuild_at if the client was rebuilt since the last call.
 
-        Called after each call that may rebuild the client (a watchdog
-        rebuild, a credential update while disconnected), so the stamp goes
-        with the count and the reason the client keeps, whichever path
-        rebuilt it.
+        Called after every connection event, so the stamp goes with the count
+        and the reason the client keeps, whichever path rebuilt it (the
+        watchdog, a credential refresh while disconnected, a request).
         """
-        if self.mqtt.rebuilds != self._rebuilds_stamped:
-            self._rebuilds_stamped = self.mqtt.rebuilds
+        if self.rebuilds != self._rebuilds_stamped:
+            self._rebuilds_stamped = self.rebuilds
             self.last_rebuild_at = dt_util.utcnow().isoformat()
             self._notify()
 
@@ -179,26 +199,33 @@ class CollectorHealth:
         self._notify()
 
     @callback
-    def note_poll(self) -> None:
-        """A REST poll finished; tell the listeners only if its error changed,
-        so a healthy poll does not rewrite the status every two minutes."""
-        poller = self.poller
-        outcome = (poller.last_error, poller.last_error_at) if poller else (None, None)
-        if outcome != self._poll_outcome:
-            self._poll_outcome = outcome
+    def note_poll_ok(self) -> None:
+        """A REST poll succeeded: a failure shown until now is over. Nothing
+        is announced for a healthy poll after a healthy one, so the status
+        is not rewritten at every poll."""
+        if self.last_poll_error is not None:
+            self.last_poll_error = None
+            self.last_poll_error_at = None
             self._notify()
+
+    @callback
+    def note_poll_error(self, error: str) -> None:
+        """A REST poll failed (the client's on_error, poll or command_poll);
+        every failure is announced, so the history shows each one."""
+        self.last_poll_error = error
+        self.last_poll_error_at = dt_util.utcnow().isoformat()
+        self._notify()
 
     @property
     def status(self) -> str:
         """ok, starting (never connected yet), disconnected, or poll_failing."""
         if not self.connected:
             return "disconnected" if self.connects or self.connect_failures else "starting"
-        if self.poller is not None and self.poller.last_error:
+        if self.last_poll_error is not None:
             return "poll_failing"
         return "ok"
 
     def status_attributes(self) -> dict[str, Any]:
-        poller = self.poller
         return {
             "connects": self.connects,
             "disconnects": self.disconnects,
@@ -207,9 +234,9 @@ class CollectorHealth:
             "rebuilds": self.rebuilds,
             "last_rebuild_reason": self.last_rebuild_reason,
             "last_rebuild_at": self.last_rebuild_at,
-            "poll_interval": poller.interval if poller else None,
-            "last_poll_error": poller.last_error if poller else None,
-            "last_poll_error_at": poller.last_error_at if poller else None,
+            "poll_interval": self.poll_interval,
+            "last_poll_error": self.last_poll_error,
+            "last_poll_error_at": self.last_poll_error_at,
             "token_expires_at": self.token_expires_at,
         }
 
@@ -222,23 +249,3 @@ class CollectorHealth:
             "connect_failed_at": self.connect_failed_at,
             "connect_fail_reason": self.connect_fail_reason,
         }
-
-
-def device_id_from_topic(topic: str) -> str | None:
-    """The device id of a /downlink/vehicle/<id>/realtimeDate/<channel> topic, else None.
-
-    The same topics the SDK's client times messages for, so a listener told
-    about a device finds its time in last_message_at.
-    """
-    parts = topic.split("/")
-    if parts and parts[0] == "":
-        parts = parts[1:]
-    if (
-        len(parts) != 5
-        or parts[0] != "downlink"
-        or parts[1] != "vehicle"
-        or parts[3] != "realtimeDate"
-        or not parts[2]
-    ):
-        return None
-    return parts[2]

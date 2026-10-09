@@ -44,34 +44,7 @@ def _str(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
-# Mower status values during which the pose is the dock position. "idle" is
-# deliberately excluded: the mower can sit idle mid-lawn after a manual stop.
-DOCKED_STATES = frozenset({"docked", "charging"})
-
-# Cap on the effective sample count for the dock average. Once reached, new
-# samples keep a constant 1/DOCK_MAX_SAMPLES weight, so the estimate tracks a
-# physically moved dock instead of being frozen by historical samples.
-DOCK_MAX_SAMPLES = 200
-
-
-def update_dock_estimate(
-    dock: dict | None, x: float, y: float, max_samples: int = DOCK_MAX_SAMPLES
-) -> dict:
-    """Fold one docked pose sample into the running dock-position average.
-
-    Returns a new dict {"x", "y", "n"}; pass the previous result (or None)
-    as ``dock``. The capped incremental mean smooths RTK jitter while still
-    converging on a new location if the dock is moved.
-    """
-    d = dock or {"x": 0.0, "y": 0.0, "n": 0}
-    n = min(int(d.get("n", 0)), max_samples - 1)
-    return {
-        "x": (d["x"] * n + float(x)) / (n + 1),
-        "y": (d["y"] * n + float(y)) / (n + 1),
-        "n": n + 1,
-    }
-
-
+# The position sensor's source attribute: every pose comes from the location channel.
 POSE_SOURCE = "mqtt_location"
 
 # The mowing-zone sensor's attributes: attribute name -> DeviceLocation field.

@@ -8,7 +8,7 @@ from homeassistant.core import State
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from mower_sdk.location import LocationDecoder
-from mower_sdk.models import DeviceLocation
+from mower_sdk.models import DeviceLocation, MowerStatus
 
 from custom_components.navimow.coordinator import NavimowCoordinator
 from custom_components.navimow.sensor import (
@@ -28,14 +28,13 @@ LATER_AT = datetime.fromisoformat(LATER)
 
 
 class FakeCoordinator:
-    """The coordinator's location handling (ingest, restored groups) with
-    the rest stubbed."""
+    """The coordinator's location handling (the record, the restored groups)
+    with the rest stubbed."""
 
-    ingest_location = NavimowCoordinator.ingest_location
+    apply_location = NavimowCoordinator.apply_location
     is_group_restored = NavimowCoordinator.is_group_restored
     has_task_report = NavimowCoordinator.has_task_report
     get_delay_since = NavimowCoordinator.get_delay_since
-    _maybe_learn_dock = NavimowCoordinator._maybe_learn_dock
 
     def __init__(self):
         self.device = SimpleNamespace(
@@ -43,12 +42,11 @@ class FakeCoordinator:
             serial_number="SN1",
         )
         self._last_location = None
+        self._restored_location = None
         self._restored_groups = set()
         self._has_task = False
         self._delay_since = None
-        self._last_state = None
-        self._dock = None
-        self.state = None  # a DeviceStateMessage-like object, or None
+        self.state = None  # a MowerState-like object (status), or None
 
     def _build_data(self):
         return None
@@ -93,9 +91,10 @@ class SensorAttributesTest(unittest.TestCase):
         )
 
     def feed(self, *entries, received_at=RECEIVED_AT):
-        """One location message through the SDK's decoder and the coordinator."""
+        """One location message through the SDK's decoder; each applied
+        entry's record reaches the coordinator as a state would carry it."""
         for message in self.decoder.decode("dev-1", list(entries), received_at).messages:
-            self.coordinator.ingest_location(message)
+            self.coordinator.apply_location(message.location)
 
     def test_mowing_zone_exposes_the_task_group(self):
         self.feed(FULL_TASK)
@@ -273,6 +272,7 @@ class SensorAttributesTest(unittest.TestCase):
         })
         self.decoder.restore("dev-1", location)
         self.coordinator._last_location = location
+        self.coordinator._restored_location = location
         self.coordinator._restored_groups = {"pose", "task", "progress", "target", "delay"}
         self.coordinator._has_task = True
 
@@ -335,11 +335,11 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertIsNone(sensor.native_value)  # no target report yet
         self.feed({"time": 1700000242000, "type": 3})
         self.assertEqual(sensor.native_value, "none")  # docked, no state yet
-        self.coordinator.state = SimpleNamespace(state="mowing")
+        self.coordinator.state = SimpleNamespace(status=MowerStatus.MOWING)
         self.assertEqual(sensor.native_value, "all")
-        self.coordinator.state = SimpleNamespace(state="paused")
+        self.coordinator.state = SimpleNamespace(status=MowerStatus.PAUSED)
         self.assertEqual(sensor.native_value, "all")
-        self.coordinator.state = SimpleNamespace(state="returning")
+        self.coordinator.state = SimpleNamespace(status=MowerStatus.RETURNING)
         self.assertEqual(sensor.native_value, "none")
         self.feed({"partitionIds": [2], "time": 1700000300010, "type": 3})
         self.assertEqual(sensor.native_value, 2)

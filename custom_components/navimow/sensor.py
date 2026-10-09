@@ -63,7 +63,7 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         icon="mdi:map-marker",
         value_fn=lambda c: target_zone(
             c.get_device_location(),
-            state.state if (state := c.get_device_state()) else None,
+            state.status.value if (state := c.get_device_state()) else None,
         ),
     ),
     NavimowSensorEntityDescription(

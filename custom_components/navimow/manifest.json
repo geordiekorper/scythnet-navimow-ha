@@ -12,7 +12,7 @@
   "issue_tracker": "https://github.com/geordiekorper/scythnet-navimow-ha/issues",
   "iot_class": "cloud_polling",
   "requirements": [
-    "navimow-sdk-community>=0.2.0a3"
+    "navimow-sdk-community>=0.2.0a6"
   ],
   "version": "1.2.0"
 }

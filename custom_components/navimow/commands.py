@@ -7,11 +7,9 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from .const import COMMAND_POLL_DELAY
-
 if TYPE_CHECKING:
-    from mower_sdk.api import MowerAPI
     from mower_sdk.models import MowerCommand
+    from mower_sdk.navimow_client import NavimowClient
 
     from .coordinator import NavimowCoordinator
 
@@ -33,12 +31,19 @@ def reject_unsupported_command(command: str, device_id: str, **parameters: objec
 
 
 async def async_send_command(
-    api: MowerAPI,
+    client: NavimowClient,
     coordinator: NavimowCoordinator,
     device_id: str,
     command: MowerCommand,
 ) -> dict[str, Any]:
-    """Submit a typed SDK command; follow-up refresh is best effort.
+    """Submit a typed SDK command through the client.
+
+    The client asks the token provider for a fresh token first, keeps the
+    receipt as ``client.last_receipt(device_id)`` and polls the status 5 s
+    later whatever the reply, since a command whose reply was lost may still
+    have acted, the cloud's status cache lags, and the mower may not report
+    the transition over MQTT at once. The states that poll produces reach the
+    coordinator through the client, so nothing is refreshed here.
 
     Returns the outcome: ``command``, ``status`` (the SDK's verdict on the
     reply, accepted, already_in_state or unknown; or unconfirmed when no
@@ -56,17 +61,9 @@ async def async_send_command(
         "sent_at": sent_at, "recorded_at": None,
     }
     try:
-        await coordinator._async_ensure_valid_token()
-        try:
-            receipt = await api.async_send_command_receipt(device_id, command)
-        finally:
-            # Whatever the reply, check the effect soon: a command whose reply
-            # was lost may still have acted, the cloud's status cache lags,
-            # and the mower may not report the transition over MQTT at once.
-            poller = getattr(coordinator, "rest_poller", None)
-            if poller is not None:
-                poller.async_request_poll(COMMAND_POLL_DELAY)
+        receipt = await client.async_send_command(device_id, command)
     except ConfigEntryAuthFailed:
+        # The token provider: Home Assistant could not refresh the token.
         _LOGGER.error("Authentication required for %s command on device %s", command.value, device_id)
         if coordinator.config_entry is not None:
             coordinator.config_entry.async_start_reauth(coordinator.hass)
@@ -98,11 +95,4 @@ async def async_send_command(
     _LOGGER.info(
         "Submitted %s command for device %s (%s)", command.value, device_id, outcome["status"]
     )
-    try:
-        await coordinator.async_request_refresh()
-    except Exception as err:  # noqa: BLE001 - refresh must not fail a submitted command
-        _LOGGER.warning(
-            "State refresh failed after %s command for device %s: %s",
-            command.value, device_id, err,
-        )
     return outcome
