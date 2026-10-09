@@ -106,8 +106,8 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         native_unit_of_measurement="m",
         icon="mdi:home-map-marker",
         value_fn=lambda c: (
-            round(d["x"], 2)
-            if (d := c.get_dock_position()) and d["x"] is not None and d.get("n") else None
+            round(loc.dock_x, 2)
+            if (loc := c.get_device_location()) and loc.dock_x is not None else None
         ),
     ),
     NavimowSensorEntityDescription(
@@ -116,8 +116,8 @@ SENSOR_DESCRIPTIONS: tuple[NavimowSensorEntityDescription, ...] = (
         native_unit_of_measurement="m",
         icon="mdi:home-map-marker",
         value_fn=lambda c: (
-            round(d["y"], 2)
-            if (d := c.get_dock_position()) and d["y"] is not None and d.get("n") else None
+            round(loc.dock_y, 2)
+            if (loc := c.get_device_location()) and loc.dock_y is not None else None
         ),
     ),
     NavimowSensorEntityDescription(
@@ -322,11 +322,12 @@ class NavimowDockSensor(NavimowLocationSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        d = self.coordinator.get_dock_position()
+        loc = self.coordinator.get_device_location()
+        samples = loc.dock_samples if loc is not None else 0
         restored = self.coordinator.is_group_restored("dock")
         return {
-            "samples": (d or {}).get("n", 0),
-            "source": "restored" if restored else ("live" if d and d.get("n") else "none"),
+            "samples": samples,
+            "source": "restored" if restored else ("live" if samples else "none"),
             "is_restored": restored,
         }
 

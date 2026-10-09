@@ -5,31 +5,34 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from mower_sdk.errors import MowerAPIError, MowerAuthRequiredError, MowerTransportError
-from mower_sdk.models import CommandReceipt, CommandVerdict, MowerCommand
+from mower_sdk.models import CommandVerdict, MowerCommand
 
 from custom_components.navimow.commands import (
     async_send_command,
     reject_unsupported_command,
 )
 from custom_components.navimow.lawn_mower import NavimowLawnMower
+from tests.fakes import receipt
 
 LOGGER = 'custom_components.navimow.commands'
 
 
-def receipt(verdict, command=MowerCommand.DOCK):
-    return CommandReceipt(device_id="mower-1", command=command, verdict=verdict)
+def coordinator_with(client):
+    return SimpleNamespace(
+        client=client, config_entry=SimpleNamespace(async_start_reauth=Mock()), hass=object()
+    )
 
 
 class CommandsTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.client = SimpleNamespace(
-            async_send_command=AsyncMock(return_value=receipt(CommandVerdict.ACCEPTED, MowerCommand.RESUME))
+            async_send_command=AsyncMock(return_value=receipt(command=MowerCommand.RESUME))
         )
-        self.entry = SimpleNamespace(async_start_reauth=Mock())
-        self.coordinator = SimpleNamespace(config_entry=self.entry, hass=object())
+        self.coordinator = coordinator_with(self.client)
+        self.entry = self.coordinator.config_entry
 
     async def send(self):
-        return await async_send_command(self.client, self.coordinator, 'mower-1', MowerCommand.RESUME)
+        return await async_send_command(self.coordinator, 'mower-1', MowerCommand.RESUME)
 
     async def test_submission_goes_through_the_client_and_logs_action_and_device(self):
         with self.assertLogs(LOGGER, level='INFO') as logs:
@@ -47,7 +50,7 @@ class CommandsTest(unittest.IsolatedAsyncioTestCase):
         ):
             await self.send()
         self.assertIs(caught.exception, error)
-        self.assertIn('resume command on device mower-1', logs.output[0])
+        self.assertIn('resume command for device mower-1', logs.output[0])
         self.entry.async_start_reauth.assert_called_once_with(self.coordinator.hass)
 
     async def test_sdk_error_logs_once_and_keeps_cause(self):
@@ -70,7 +73,7 @@ class CommandsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(caught.exception, error)
 
     async def test_existing_entity_controls_use_shared_helper(self):
-        entity = SimpleNamespace(_client=self.client, coordinator=self.coordinator, _device_id='mower-1')
+        entity = SimpleNamespace(coordinator=self.coordinator, _device_id='mower-1')
         with patch('custom_components.navimow.lawn_mower.async_send_command', new_callable=AsyncMock) as send:
             for method, command in [
                 ('async_start_mowing', MowerCommand.START),
@@ -80,15 +83,15 @@ class CommandsTest(unittest.IsolatedAsyncioTestCase):
                 ('async_stop', MowerCommand.STOP),
             ]:
                 await getattr(NavimowLawnMower, method)(entity)
-                send.assert_awaited_with(self.client, self.coordinator, 'mower-1', command)
+                send.assert_awaited_with(self.coordinator, 'mower-1', command)
             await NavimowLawnMower.async_navimow_command(entity, "dock")
-            send.assert_awaited_with(self.client, self.coordinator, 'mower-1', MowerCommand.DOCK)
+            send.assert_awaited_with(self.coordinator, 'mower-1', MowerCommand.DOCK)
             self.assertEqual(send.await_count, 6)
 
     async def test_all_supported_operations_use_sdk_mapping(self):
         for command in MowerCommand:
-            self.client.async_send_command.return_value = receipt(CommandVerdict.ACCEPTED, command)
-            await async_send_command(self.client, self.coordinator, 'mower-1', command)
+            self.client.async_send_command.return_value = receipt(command=command)
+            await async_send_command(self.coordinator, 'mower-1', command)
             self.client.async_send_command.assert_awaited_with('mower-1', command)
 
     async def test_unsupported_operation_logs_context_without_the_client(self):
@@ -105,14 +108,12 @@ class CommandsTest(unittest.IsolatedAsyncioTestCase):
 
 class OutcomeTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.client = SimpleNamespace(
-            async_send_command=AsyncMock(return_value=receipt(CommandVerdict.ACCEPTED))
-        )
-        self.entry = SimpleNamespace(async_start_reauth=Mock())
-        self.coordinator = SimpleNamespace(config_entry=self.entry, hass=object())
+        self.client = SimpleNamespace(async_send_command=AsyncMock(return_value=receipt()))
+        self.coordinator = coordinator_with(self.client)
+        self.entry = self.coordinator.config_entry
 
     async def send(self):
-        return await async_send_command(self.client, self.coordinator, "mower-1", MowerCommand.DOCK)
+        return await async_send_command(self.coordinator, "mower-1", MowerCommand.DOCK)
 
     async def test_accepted_command_reports_its_outcome(self):
         with self.assertLogs(LOGGER, level="INFO"):
@@ -129,7 +130,7 @@ class OutcomeTest(unittest.IsolatedAsyncioTestCase):
             (CommandVerdict.ALREADY_IN_STATE, "already_in_state"),
             (CommandVerdict.UNKNOWN, "unknown"),
         ):
-            self.client.async_send_command.return_value = receipt(verdict)
+            self.client.async_send_command.return_value = receipt(verdict=verdict)
             self.assertEqual((await self.send())["status"], status, verdict)
 
     async def test_no_usable_reply_is_unconfirmed(self):

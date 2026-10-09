@@ -1,28 +1,23 @@
 """Actions tested through HA's native entity routing with mocked mower APIs."""
 import logging
-import tempfile
 import unittest
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from homeassistant.components.lawn_mower import LawnMowerEntity
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import EntityPlatform
-from mower_sdk.models import CommandReceipt, CommandVerdict, MowerCommand
+from mower_sdk.models import CommandVerdict, MowerCommand
 
 from custom_components.navimow.lawn_mower import NavimowLawnMower
 from custom_components.navimow.services import (
     async_setup_services,
     async_unload_services,
 )
-
-
-def receipt(device_id, command, verdict):
-    return CommandReceipt(device_id=device_id, command=command, verdict=verdict)
+from tests.fakes import hass_for, receipt
 
 
 class FakeMower(LawnMowerEntity):
@@ -36,18 +31,17 @@ class FakeMower(LawnMowerEntity):
         self.hass = hass
         self.entity_id = entity_id
         self._device_id = vendor_id
-        self._client = SimpleNamespace(async_send_command=AsyncMock(
+        client = SimpleNamespace(async_send_command=AsyncMock(
             side_effect=lambda device_id, command: receipt(device_id, command, CommandVerdict.ACCEPTED)
         ))
-        self.coordinator = SimpleNamespace(config_entry=None, hass=hass, last_update_success=True)
+        self.coordinator = SimpleNamespace(
+            client=client, config_entry=None, hass=hass, last_update_success=True
+        )
 
 
 class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.hass = HomeAssistant(self.temp.name)
-        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.hass = hass_for(self)
         dr.async_setup(self.hass)
         await dr.async_load(self.hass)
         await er.async_load(self.hass)
@@ -83,7 +77,7 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_command_outcome_is_returned_when_asked_for(self):
-        self.first._client.async_send_command.side_effect = (
+        self.first.coordinator.client.async_send_command.side_effect = (
             lambda device_id, command: receipt(device_id, command, CommandVerdict.ALREADY_IN_STATE)
         )
         response = await self.hass.services.async_call(
@@ -102,7 +96,7 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
                 'navimow', 'command', {'command': name},
                 target={'entity_id': self.first.entity_id}, blocking=True, return_response=True,
             )
-            self.first._client.async_send_command.assert_awaited_with('vendor-1', command)
+            self.first.coordinator.client.async_send_command.assert_awaited_with('vendor-1', command)
             self.assertEqual(response[self.first.entity_id]["status"], "accepted")
             self.assertEqual(response[self.first.entity_id]["command"], name)
 
@@ -113,42 +107,42 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
                 'navimow', 'command', {'command': 'mow_faster'},
                 target={'entity_id': self.first.entity_id}, blocking=True,
             )
-        self.first._client.async_send_command.assert_not_awaited()
+        self.first.coordinator.client.async_send_command.assert_not_awaited()
 
     async def test_command_action_works_without_asking_for_a_response(self):
         await self.hass.services.async_call(
             'navimow', 'command', {'command': 'dock'},
             target={'entity_id': self.first.entity_id}, blocking=True,
         )
-        self.first._client.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.DOCK)
+        self.first.coordinator.client.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.DOCK)
 
     async def test_each_entity_routes_to_its_own_mower(self):
         await self.call('resume', self.first.entity_id)
         await self.call('stop', self.second.entity_id)
-        self.first._client.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.RESUME)
-        self.second._client.async_send_command.assert_awaited_once_with('vendor-2', MowerCommand.STOP)
+        self.first.coordinator.client.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.RESUME)
+        self.second.coordinator.client.async_send_command.assert_awaited_once_with('vendor-2', MowerCommand.STOP)
 
     async def test_multiple_entities(self):
         await self.call('resume', [self.first.entity_id, self.second.entity_id])
         for e in (self.first, self.second):
-            e._client.async_send_command.assert_awaited_once_with(e._device_id, MowerCommand.RESUME)
+            e.coordinator.client.async_send_command.assert_awaited_once_with(e._device_id, MowerCommand.RESUME)
 
     async def test_renamed_entity(self):
         await self.platform.async_remove_entity(self.first.entity_id)
         self.first = FakeMower(self.hass, 'lawn_mower.front_lawn', 'vendor-1')
         await self.platform.async_add_entities([self.first])
         await self.call('resume', self.first.entity_id)
-        self.first._client.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.RESUME)
+        self.first.coordinator.client.async_send_command.assert_awaited_once_with('vendor-1', MowerCommand.RESUME)
 
     async def test_unknown_foreign_sensor_and_unavailable_targets_do_not_send(self):
         self.first._attr_available = False
         for target in ['lawn_mower.missing', 'lawn_mower.other_brand', 'sensor.battery', self.first.entity_id]:
             await self.call('resume', target)
         for e in (self.first, self.second, self.foreign, self.sensor):
-            e._client.async_send_command.assert_not_awaited()
+            e.coordinator.client.async_send_command.assert_not_awaited()
 
     async def test_sdk_failure_is_action_error(self):
-        self.first._client.async_send_command.side_effect = RuntimeError('Rejected')
+        self.first.coordinator.client.async_send_command.side_effect = RuntimeError('Rejected')
         with self.assertRaises(HomeAssistantError):
             await self.call('stop', self.first.entity_id)
 
@@ -165,11 +159,11 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         async_setup_services(self.hass)
         async_setup_services(self.hass)
         await self.call('resume', self.first.entity_id)
-        self.first._client.async_send_command.assert_awaited_once()
-        old._client.async_send_command.assert_not_awaited()
+        self.first.coordinator.client.async_send_command.assert_awaited_once()
+        old.coordinator.client.async_send_command.assert_not_awaited()
         self.assertTrue(self.hass.services.has_service('navimow', 'stop'))
         await self.call('stop', self.first.entity_id)
-        self.first._client.async_send_command.assert_awaited_with('vendor-1', MowerCommand.STOP)
+        self.first.coordinator.client.async_send_command.assert_awaited_with('vendor-1', MowerCommand.STOP)
 
     async def test_blade_height_remains_unsupported(self):
         with (
@@ -179,7 +173,7 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
             await self.hass.services.async_call(
                 'navimow', 'set_blade_height', {'device_id': 'vendor-1', 'height': 30}, blocking=True
             )
-        self.first._client.async_send_command.assert_not_awaited()
+        self.first.coordinator.client.async_send_command.assert_not_awaited()
 
     async def test_other_loaded_entry_preserves_services(self):
         self.hass.data['navimow']['other_entry'] = {}
@@ -188,4 +182,4 @@ class CommandServicesTest(unittest.IsolatedAsyncioTestCase):
         for name in ('resume', 'stop', 'command', 'set_blade_height'):
             self.assertTrue(self.hass.services.has_service('navimow', name))
         await self.call('stop', self.second.entity_id)
-        self.second._client.async_send_command.assert_awaited_once_with('vendor-2', MowerCommand.STOP)
+        self.second.coordinator.client.async_send_command.assert_awaited_once_with('vendor-2', MowerCommand.STOP)

@@ -1,6 +1,7 @@
 """The entry's wiring on the real SDK client, driven through paho's own callbacks.
 
-A NavimowClient on a fake MowerAPI builds the real NavimowSDK, whose paho
+A NavimowClient on the integration's ObservedMowerAPI, with the cloud faked
+one layer down (the raw replies), builds the real NavimowSDK, whose paho
 client is kept off the network (connect_async and loop_start do nothing).
 The tests call the callbacks the paho client carries, as paho's thread
 would, and check what the entry's health and coordinator show once the
@@ -9,7 +10,6 @@ client has run its hooks on the loop.
 import asyncio
 import json
 import unittest
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,39 +17,34 @@ import paho.mqtt.client as paho
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
 
-from homeassistant.core import HomeAssistant
-import tempfile
-
 from mower_sdk.errors import MowerTransportError
-from mower_sdk.models import Device, DeviceStatus, MqttConnectionInfo
+from mower_sdk.models import MqttConnectionInfo
 from mower_sdk.navimow_client import NavimowClient
 
 from custom_components.navimow import error_handler, status_observer, watchdog_factory
 from custom_components.navimow.coordinator import NavimowCoordinator
 from custom_components.navimow.health import CollectorHealth
-from tests.fakes import REST_PAYLOAD
+from custom_components.navimow.polls import ObservedMowerAPI
+from tests.fakes import REST_PAYLOAD, device, hass_for
 
-DEVICE = Device(id="dev-1", name="Mower", model="X430", firmware_version="1.0", serial_number="SN1")
+DEVICE = device()
 INFO = MqttConnectionInfo(
     broker="wss://broker.example.invalid", port=443, ws_path="/mqtt/1", username="1", password="p"
 )
 
 
-class FakeAPI:
-    """The MowerAPI calls the client makes, answered from the test; reports
-    each status reply as ObservedMowerAPI does."""
+class FakeAPI(ObservedMowerAPI):
+    """The integration's REST client with the cloud's raw replies answered
+    from the test: the status entries are read, and reported, by the real
+    code above them."""
 
     def __init__(self):
-        self.token = "t"
-        self.statuses = {"dev-1": DeviceStatus.from_dict(dict(REST_PAYLOAD))}
+        super().__init__(session=object(), token="t", base_url="https://api.invalid")
+        self.entries = [dict(REST_PAYLOAD)]
         self.fail_polls = False
         self.polls = 0
         self.info_requests = 0
-        self.on_statuses = None
         self.during_poll = None  # a callable run at each poll, before its outcome
-
-    def set_token(self, token):
-        self.token = token
 
     async def async_get_devices(self):
         return [DEVICE]
@@ -63,23 +58,18 @@ class FakeAPI:
         self.info_requests += 1
         return {"mqttHost": INFO.broker, "mqttUrl": INFO.ws_path, "userName": "2", "pwdInfo": "p2"}
 
-    async def async_get_device_statuses(self, device_ids):
+    async def async_get_vehicle_status_raw(self, device_ids):
         self.polls += 1
         if self.during_poll is not None:
             self.during_poll()
         if self.fail_polls:
             raise MowerTransportError("down")
-        if self.on_statuses is not None:
-            self.on_statuses(self.statuses, datetime.now(timezone.utc))
-        return self.statuses
+        return self.entries
 
 
 class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.hass = HomeAssistant(self.temp.name)
-        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.hass = hass_for(self)
         self.api = FakeAPI()
         self.health = CollectorHealth()
         self.entry = SimpleNamespace(async_start_reauth=lambda hass: None)
@@ -181,7 +171,6 @@ class ClientWiringTest(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         self.assertEqual(heard, ["dev-1", "dev-1"])
         self.assertIsNotNone(self.health.last_message_at("dev-1"))
-        self.assertIsNotNone(self.health.location_age("dev-1"))
 
     async def test_a_state_message_becomes_the_shown_state(self):
         await self.connect()

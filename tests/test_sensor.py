@@ -8,9 +8,10 @@ from homeassistant.core import State
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from mower_sdk.location import LocationDecoder
-from mower_sdk.models import DeviceLocation, MowerStatus
+from mower_sdk.models import MowerStatus
 
 from custom_components.navimow.coordinator import NavimowCoordinator
+from custom_components.navimow.location import DOCK_KEYS
 from custom_components.navimow.sensor import (
     RESTORING_KEYS,
     SENSOR_DESCRIPTIONS,
@@ -19,6 +20,7 @@ from custom_components.navimow.sensor import (
     NavimowSensor,
 )
 
+from tests.fakes import device
 from tests.test_location import FULL_TASK, POSE, RECEIVED, RECEIVED_AT
 
 DESCRIPTIONS = {d.key: d for d in SENSOR_DESCRIPTIONS}
@@ -30,20 +32,16 @@ LATER_AT = datetime.fromisoformat(LATER)
 
 class FakeCoordinator:
     """The coordinator's location handling (the record, the restored groups)
-    with the rest stubbed."""
+    on its initial state, with the rest stubbed."""
 
     apply_location = NavimowCoordinator.apply_location
     restore_location = NavimowCoordinator.restore_location
     is_group_restored = NavimowCoordinator.is_group_restored
     has_task_report = NavimowCoordinator.has_task_report
     get_delay_since = NavimowCoordinator.get_delay_since
-    get_dock_position = NavimowCoordinator.get_dock_position
 
     def __init__(self):
-        self.device = SimpleNamespace(
-            id="dev-1", name="Mower", model="X430", firmware_version="1.0",
-            serial_number="SN1",
-        )
+        self.device = device()
         self._last_location = None
         self._restored_location = None
         self._restored_fields = {}
@@ -52,10 +50,7 @@ class FakeCoordinator:
         self._delay_since = None
         self.state = None  # a MowerState-like object (status), or None
 
-    def _build_data(self):
-        return None
-
-    def async_set_updated_data(self, _data):
+    def _publish(self):
         pass
 
     def get_device_location(self):
@@ -264,18 +259,18 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertEqual(DESCRIPTIONS["mow_progress"].state_class, "measurement")
 
     def restore(self):
-        """A record as the sensors restore it after a restart, every group restored."""
-        location = DeviceLocation.from_dict({
-            "device_id": "dev-1", "x": 2.0, "y": 0.3, "vehicle_state": 1,
-            "pose_at": 1700000000000 - 5000, "pose_received_at": RECEIVED,
-            "current_zone": 2, "mowing_percentage": 100.0, "task_at": 1700000000032 - 5000,
-            "route_progress": 10000, "partition_ids": [3], "task_delay": False,
-        })
-        self.decoder.restore("dev-1", location)
-        self.coordinator._last_location = location
-        self.coordinator._restored_location = location
-        self.coordinator._restored_groups = {"pose", "task", "progress", "target", "delay"}
-        self.coordinator._has_task = True
+        """A record as the sensors restore it after a restart, every group
+        restored through the coordinator's own path."""
+        for group, fields in (
+            ("pose", {"x": 2.0, "y": 0.3, "vehicle_state": 1,
+                      "pose_at": 1700000000000 - 5000, "pose_received_at": RECEIVED}),
+            ("task", {"current_zone": 2, "mowing_percentage": 100.0, "task_at": 1700000000032 - 5000}),
+            ("progress", {"route_progress": 10000}),
+            ("target", {"partition_ids": [3]}),
+            ("delay", {"task_delay": False}),
+        ):
+            self.coordinator.restore_location(group, fields)
+        self.decoder.restore("dev-1", self.coordinator.get_device_location())
 
     def test_restored_marker_follows_each_group(self):
         self.restore()
@@ -390,7 +385,7 @@ class RestoreOnStartupTest(unittest.IsolatedAsyncioTestCase):
         coordinator = FakeCoordinator()
         coordinator.restore_location = Mock()
         coordinator.async_add_listener = Mock(return_value=lambda: None)
-        cls = NavimowDockSensor if key in ("dock_x", "dock_y") else NavimowLocationSensor
+        cls = NavimowDockSensor if key in DOCK_KEYS else NavimowLocationSensor
         sensor = cls(coordinator=coordinator, entity_description=DESCRIPTIONS[key])
         return sensor, coordinator
 

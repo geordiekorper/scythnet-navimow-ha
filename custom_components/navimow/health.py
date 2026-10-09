@@ -57,46 +57,43 @@ class CollectorHealth:
         """The SDK's MQTT client, or None before the first connect."""
         return None if self.client is None else self.client.mqtt
 
-    # Read from the SDK's client, which counts every paho client it builds.
+    # Read from the SDK's client, which counts every paho client it builds;
+    # getattr on None gives the default before the first connect.
     @property
     def connects(self) -> int:
-        return self.mqtt.connects if self.mqtt is not None else 0
+        return getattr(self.mqtt, "connects", 0)
 
     @property
     def disconnects(self) -> int:
-        return self.mqtt.disconnects if self.mqtt is not None else 0
+        return getattr(self.mqtt, "disconnects", 0)
 
     @property
     def connect_failures(self) -> int:
-        return self.mqtt.connect_failures if self.mqtt is not None else 0
+        return getattr(self.mqtt, "connect_failures", 0)
 
     @property
     def rebuilds(self) -> int:
-        return self.mqtt.rebuilds if self.mqtt is not None else 0
+        return getattr(self.mqtt, "rebuilds", 0)
 
     @property
     def last_rebuild_reason(self) -> str | None:
-        return self.mqtt.last_rebuild_reason if self.mqtt is not None else None
+        return getattr(self.mqtt, "last_rebuild_reason", None)
 
     @property
     def client_id(self) -> str | None:
-        return self.mqtt.client_id if self.mqtt is not None else None
+        return getattr(self.mqtt, "client_id", None)
 
     @property
     def disconnect_reason(self) -> str | None:
-        return self.mqtt.last_disconnect_reason if self.mqtt is not None else None
+        return getattr(self.mqtt, "last_disconnect_reason", None)
 
     @property
     def connect_fail_reason(self) -> str | None:
-        return self.mqtt.last_connect_fail_reason if self.mqtt is not None else None
+        return getattr(self.mqtt, "last_connect_fail_reason", None)
 
     def last_message_at(self, device_id: str) -> datetime | None:
         """When the last MQTT message for the device arrived, on any channel."""
-        return self.mqtt.last_message_at(device_id) if self.mqtt is not None else None
-
-    def location_age(self, device_id: str) -> float | None:
-        """Seconds since the device's last location message, or None if none has come."""
-        return self.mqtt.last_message_age(device_id, "location") if self.mqtt is not None else None
+        return mqtt.last_message_at(device_id) if (mqtt := self.mqtt) is not None else None
 
     @callback
     def async_add_listener(self, update: Callable[[], None]) -> CALLBACK_TYPE:
@@ -192,11 +189,6 @@ class CollectorHealth:
         if stamp != self.token_expires_at:
             self.token_expires_at = stamp
             self._notify()
-
-    @callback
-    def note_settings_changed(self) -> None:
-        """A setting shown in the status (the poll interval) changed."""
-        self._notify()
 
     @callback
     def note_poll_ok(self) -> None:

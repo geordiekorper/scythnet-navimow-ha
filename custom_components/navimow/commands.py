@@ -4,12 +4,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 if TYPE_CHECKING:
     from mower_sdk.models import MowerCommand
-    from mower_sdk.navimow_client import NavimowClient
 
     from .coordinator import NavimowCoordinator
 
@@ -18,6 +19,23 @@ _LOGGER = logging.getLogger(__name__)
 UNSUPPORTED_COMMANDS = {
     "set_blade_height": "Blade height adjustment is not supported by the Navimow REST API",
 }
+
+
+def refused_credentials(err: BaseException) -> bool:
+    """Whether a failure means the credentials were refused, by the cloud
+    (the SDK's MowerAuthRequiredError) or by Home Assistant's own token
+    refresh (ConfigEntryAuthFailed): the one failure only the integration
+    can act on, by starting reauthentication."""
+    from mower_sdk.errors import MowerAuthRequiredError
+
+    return isinstance(err, (MowerAuthRequiredError, ConfigEntryAuthFailed))
+
+
+def start_reauth(hass: HomeAssistant, entry: ConfigEntry | None, what: str, err: BaseException) -> None:
+    """Log refused credentials and start the entry's reauthentication flow."""
+    _LOGGER.error("Navimow credentials refused during %s: %s", what, err)
+    if entry is not None:
+        entry.async_start_reauth(hass)
 
 
 def reject_unsupported_command(command: str, device_id: str, **parameters: object) -> NoReturn:
@@ -31,12 +49,11 @@ def reject_unsupported_command(command: str, device_id: str, **parameters: objec
 
 
 async def async_send_command(
-    client: NavimowClient,
     coordinator: NavimowCoordinator,
     device_id: str,
     command: MowerCommand,
 ) -> dict[str, Any]:
-    """Submit a typed SDK command through the client.
+    """Submit a typed SDK command through the coordinator's client.
 
     The client asks the token provider for a fresh token first, keeps the
     receipt as ``client.last_receipt(device_id)`` and polls the status 5 s
@@ -60,13 +77,12 @@ async def async_send_command(
         "command": command.value, "status": "unknown", "error": None,
         "sent_at": sent_at, "recorded_at": None,
     }
+    what = f"the {command.value} command for device {device_id}"
     try:
-        receipt = await client.async_send_command(device_id, command)
-    except ConfigEntryAuthFailed:
+        receipt = await coordinator.client.async_send_command(device_id, command)
+    except ConfigEntryAuthFailed as err:
         # The token provider: Home Assistant could not refresh the token.
-        _LOGGER.error("Authentication required for %s command on device %s", command.value, device_id)
-        if coordinator.config_entry is not None:
-            coordinator.config_entry.async_start_reauth(coordinator.hass)
+        start_reauth(coordinator.hass, coordinator.config_entry, what, err)
         raise
     except MowerTransportError as err:
         # A timeout, a connection error, an HTTP 5xx, a terminal redirect or
@@ -79,11 +95,7 @@ async def async_send_command(
                        recorded_at=dt_util.utcnow().isoformat())
         return outcome
     except MowerAuthRequiredError as err:
-        _LOGGER.error(
-            "Credentials refused for %s command on device %s: %s", command.value, device_id, err
-        )
-        if coordinator.config_entry is not None:
-            coordinator.config_entry.async_start_reauth(coordinator.hass)
+        start_reauth(coordinator.hass, coordinator.config_entry, what, err)
         raise HomeAssistantError(f"Navimow {command.value} failed: {err}") from err
     except Exception as err:
         _LOGGER.error("Failed to submit %s command for device %s: %s", command.value, device_id, err)

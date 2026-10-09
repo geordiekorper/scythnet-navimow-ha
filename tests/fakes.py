@@ -1,11 +1,22 @@
-"""Stand-ins shared by the tests."""
+"""Stand-ins and fixtures shared by the tests."""
+import tempfile
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from mower_sdk.models import DeviceStateMessage, DeviceStatus
+from homeassistant.core import HomeAssistant
+from mower_sdk.models import (
+    CommandReceipt,
+    CommandVerdict,
+    Device,
+    DeviceStateMessage,
+    DeviceStatus,
+    MowerCommand,
+)
 from mower_sdk.navimow_client import MowerState
+
+from custom_components.navimow.const import DOMAIN
 
 RECEIVED_AT = datetime(2026, 9, 17, 20, 0, tzinfo=timezone.utc)
 
@@ -16,6 +27,33 @@ REST_PAYLOAD = {
     "vehicleState": "isDocked",
     "descriptiveCapacityRemaining": "FULL",
 }
+
+
+def hass_for(testcase) -> HomeAssistant:
+    """A HomeAssistant on a temporary directory, stopped with the test."""
+    temp = tempfile.TemporaryDirectory()
+    testcase.addCleanup(temp.cleanup)
+    hass = HomeAssistant(temp.name)
+    testcase.addAsyncCleanup(hass.async_stop, force=True)
+    return hass
+
+
+def entry_hass(client):
+    """A hass holding one entry's data (its client) and the platform unload
+    stub, with the entry: what the unload and the connect's undo touch."""
+    hass = SimpleNamespace(
+        data={DOMAIN: {"e1": {"client": client}}},
+        config_entries=SimpleNamespace(async_unload_platforms=AsyncMock(return_value=True)),
+    )
+    return hass, SimpleNamespace(entry_id="e1")
+
+
+def device(device_id="dev-1", name="Mower") -> Device:
+    return Device(id=device_id, name=name, model="X430", firmware_version="1.0", serial_number="SN1")
+
+
+def receipt(device_id="mower-1", command=MowerCommand.DOCK, verdict=CommandVerdict.ACCEPTED):
+    return CommandReceipt(device_id=device_id, command=command, verdict=verdict)
 
 
 class FakeMqtt:
@@ -33,15 +71,10 @@ class FakeMqtt:
         self.last_disconnect_reason: str | None = None
         self.last_connect_fail_reason: str | None = None
         self.message_at: dict[str, datetime] = {}
-        self.location_age: dict[str, float] = {}
 
     def last_message_at(self, device_id, channel=None):
         assert channel is None
         return self.message_at.get(device_id)
-
-    def last_message_age(self, device_id, channel=None):
-        assert channel == "location"
-        return self.location_age.get(device_id)
 
 
 class FakeClient:
@@ -58,7 +91,6 @@ class FakeClient:
         self.restore_location = Mock()
         self.async_send_command = AsyncMock()
         self.async_disconnect = AsyncMock()
-        self.last_receipt = Mock(return_value=None)
 
     def _register(self, channel, callback, device_id=None):
         self.callbacks[channel].append((callback, device_id))
@@ -114,10 +146,4 @@ def rest_state(payload=None, location=None, received_at=RECEIVED_AT):
     status = DeviceStatus.from_dict(dict(payload or REST_PAYLOAD))
     return MowerState.from_status(
         status, location=location, received_at=received_at, received_monotonic=time.monotonic()
-    )
-
-
-def device(device_id="dev-1", name="Mower"):
-    return SimpleNamespace(
-        id=device_id, name=name, model="X430", firmware_version="1.0", serial_number="SN1"
     )

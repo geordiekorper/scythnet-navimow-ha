@@ -1,22 +1,18 @@
 """REST poll interval option: form, bounds, and applying it through a reload."""
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant
 
 from custom_components.navimow import _async_options_updated
 from custom_components.navimow.config_flow import NavimowOptionsFlowHandler
+from tests.fakes import hass_for
 
 
 class OptionsTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.hass = HomeAssistant(self.temp.name)
-        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.hass = hass_for(self)
 
     async def form_schema(self, options):
         flow = NavimowOptionsFlowHandler(SimpleNamespace(options=options))
@@ -54,3 +50,4 @@ class OptionsTest(unittest.IsolatedAsyncioTestCase):
         entry = SimpleNamespace(entry_id="entry-1", options={"rest_poll_seconds": 90})
         await _async_options_updated(hass, entry)
         hass.config_entries.async_reload.assert_awaited_once_with("entry-1")
+

@@ -19,7 +19,7 @@ from custom_components.navimow import (
 )
 from custom_components.navimow.const import DOMAIN
 from custom_components.navimow.health import CollectorHealth
-from tests.fakes import REST_PAYLOAD
+from tests.fakes import REST_PAYLOAD, entry_hass
 
 LOGGER = "custom_components.navimow"
 
@@ -95,16 +95,32 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
     a connect that does not complete undoes both."""
 
     def setUp(self):
-        self.hass = SimpleNamespace(
-            data={DOMAIN: {"e1": {"client": object()}}},
-            config_entries=SimpleNamespace(async_unload_platforms=AsyncMock(return_value=True)),
-        )
-        self.entry = SimpleNamespace(entry_id="e1")
         self.client = SimpleNamespace(async_connect=AsyncMock(), async_disconnect=AsyncMock())
+        self.hass, self.entry = entry_hass(self.client)
 
     def undone(self):
         self.hass.config_entries.async_unload_platforms.assert_awaited_once_with(self.entry, PLATFORMS)
         self.assertNotIn("e1", self.hass.data[DOMAIN])
+
+    async def settle(self):
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    async def cancel_twice(self, connect):
+        """Start the undo around a connect that waits, cancel it once (the
+        undo waits for the connect) and again (it stops waiting)."""
+        self.client.async_connect = connect
+        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
+        await self.started.wait()
+        task.cancel()
+        await self.settle()
+        self.assertFalse(task.done())
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertIn("disconnects itself", logs.output[0])
+        self.undone()
 
     async def test_a_connect_that_completes_leaves_everything_in_place(self):
         await _async_connect_or_undo(self.hass, self.entry, self.client)
@@ -183,54 +199,30 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
         self.undone()
 
     async def test_a_setup_cancelled_twice_lets_the_connect_undo_itself(self):
-        started, release = asyncio.Event(), asyncio.Event()
+        self.started, release = asyncio.Event(), asyncio.Event()
 
         async def connect():
-            started.set()
+            self.started.set()
             await release.wait()
 
-        self.client.async_connect = connect
-        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
-        await started.wait()
-        task.cancel()  # the first: the undo waits for the connect
-        for _ in range(5):
-            await asyncio.sleep(0)
-        self.assertFalse(task.done())
-        with self.assertLogs(LOGGER, level="WARNING") as logs:
-            task.cancel()  # the second: the undo stops waiting
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        self.assertIn("disconnects itself", logs.output[0])
-        self.undone()
+        await self.cancel_twice(connect)
         self.client.async_disconnect.assert_not_awaited()  # nothing completed yet
         release.set()  # the connect completes after everyone gave up
-        for _ in range(5):
-            await asyncio.sleep(0)
+        await self.settle()
         self.client.async_disconnect.assert_awaited_once()
 
     async def test_a_setup_cancelled_twice_with_a_connect_that_then_fails_disconnects_nothing(self):
-        started, release = asyncio.Event(), asyncio.Event()
+        self.started, release = asyncio.Event(), asyncio.Event()
 
         async def connect():
-            started.set()
+            self.started.set()
             await release.wait()
             raise MowerAPIError("down")
 
-        self.client.async_connect = connect
-        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
-        await started.wait()
-        task.cancel()
-        for _ in range(5):
-            await asyncio.sleep(0)
-        with self.assertLogs(LOGGER, level="WARNING"):
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
+        await self.cancel_twice(connect)
         release.set()
-        for _ in range(5):
-            await asyncio.sleep(0)
+        await self.settle()
         self.client.async_disconnect.assert_not_awaited()
-        self.undone()
 
     async def test_a_setup_cancelled_during_a_connect_that_then_fails_undoes_without_a_disconnect(self):
         started = asyncio.Event()

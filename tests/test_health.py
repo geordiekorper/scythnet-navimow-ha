@@ -1,13 +1,10 @@
 """Collector health: the SDK client's counters and reasons, the flag and stamps
 its connection events set, the poll's outcome, and the diagnostic entities
 that show them."""
-import tempfile
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
-
-from homeassistant.core import HomeAssistant
 
 from custom_components.navimow.binary_sensor import NavimowCloudConnected
 from custom_components.navimow.health import CollectorHealth
@@ -15,7 +12,7 @@ from custom_components.navimow.sensor import (
     NavimowCollectorStatusSensor,
     NavimowLastMessageSensor,
 )
-from tests.fakes import FakeClient, FakeMqtt, device
+from tests.fakes import FakeClient, FakeMqtt, device, hass_for
 
 DEVICE = device()
 
@@ -49,7 +46,6 @@ class HealthFromClientTest(unittest.TestCase):
         self.assertEqual((health.connects, health.disconnects, health.connect_failures, health.rebuilds), (0, 0, 0, 0))
         self.assertIsNone(health.client_id)
         self.assertIsNone(health.last_message_at("dev-1"))
-        self.assertIsNone(health.location_age("dev-1"))
         self.assertEqual(health.status, "starting")
         health = CollectorHealth()  # the client is set after construction
         self.assertEqual(health.connects, 0)
@@ -84,11 +80,8 @@ class HealthFromClientTest(unittest.TestCase):
     def test_message_times_are_the_clients(self):
         stamp = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
         self.mqtt.message_at["dev-1"] = stamp
-        self.mqtt.location_age["dev-1"] = 12.5
         self.assertEqual(self.health.last_message_at("dev-1"), stamp)
         self.assertIsNone(self.health.last_message_at("dev-2"))
-        self.assertEqual(self.health.location_age("dev-1"), 12.5)
-        self.assertIsNone(self.health.location_age("dev-2"))
 
     def test_a_rebuild_is_stamped_once_when_the_client_counted_it(self):
         heard = []
@@ -158,10 +151,7 @@ class CloudConnectedSensorTest(unittest.IsolatedAsyncioTestCase):
 
 class LastMessageSensorTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.hass = HomeAssistant(self.temp.name)
-        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.hass = hass_for(self)
         self.mqtt = FakeMqtt()
         self.health = CollectorHealth(FakeClient(self.mqtt))
         self.sensor = NavimowLastMessageSensor(self.health, DEVICE)
@@ -276,10 +266,6 @@ class CollectorStatusTest(unittest.TestCase):
         self.health.note_token(None)
         self.assertEqual(len(self.heard), 1)
         self.assertTrue(self.health.token_expires_at.startswith("2023-11-14T22:13:20"))
-
-    def test_settings_change_is_announced(self):
-        self.health.note_settings_changed()
-        self.assertEqual(self.heard, ["starting"])
 
     def test_poll_outcome_announces_each_failure_and_the_recovery_once(self):
         self.health.note_poll_ok()  # healthy, as before: nothing to say

@@ -40,6 +40,7 @@ if sdk_check.PROBLEM is None:
     from mower_sdk.navimow_client import NavimowClient
     from mower_sdk.watchdog import MqttWatchdog
 
+    from .commands import refused_credentials, start_reauth
     from .coordinator import NavimowCoordinator
     from .health import CollectorHealth
     from .polls import ObservedMowerAPI
@@ -113,9 +114,8 @@ def error_handler(hass: HomeAssistant, entry: ConfigEntry, health: "CollectorHea
     def on_error(operation: str, exc: Exception) -> None:
         if operation in ("poll", "command_poll"):
             health.note_poll_error(str(exc) or type(exc).__name__)
-        if isinstance(exc, (MowerAuthRequiredError, ConfigEntryAuthFailed)):
-            _LOGGER.error("Navimow credentials refused during %s: %s", operation, exc)
-            entry.async_start_reauth(hass)
+        if refused_credentials(exc):
+            start_reauth(hass, entry, f"the client's {operation}", exc)
 
     return on_error
 
@@ -194,24 +194,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, entry, implementation
         )
 
-        token: dict[str, Any] | None = None
-        if hasattr(oauth_session, "async_get_valid_token"):
-            try:
-                token = await oauth_session.async_get_valid_token()
-            except AttributeError:
-                token = None
-        if not token and hasattr(oauth_session, "async_ensure_token_valid"):
-            await oauth_session.async_ensure_token_valid()
-            token = oauth_session.token
-        if not token and hasattr(oauth_session, "async_get_access_token"):
-            access_token_value = await oauth_session.async_get_access_token()
-            token = {"access_token": access_token_value} if access_token_value else None
-        if not token:
-            # Final fallback for older HA versions storing token on the entry.
-            token = entry.data.get("token")
-        if not token:
-            raise ConfigEntryAuthFailed("No valid token available")
-        access_token = token.get("access_token")
+        # The first token, refreshed if due; a refresh that fails here is
+        # retried through ConfigEntryNotReady by the handler below. Every
+        # later one comes through the client's token provider.
+        await oauth_session.async_ensure_token_valid()
+        token = oauth_session.token
+        access_token = token.get("access_token") if token else None
         if not access_token:
             raise ConfigEntryAuthFailed("No access token in token data")
 
@@ -228,7 +216,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             devices = await api.async_get_devices()
             _LOGGER.info("Discovered %d Navimow device(s)", len(devices))
         except MowerAuthRequiredError as err:
-            _LOGGER.error("Credentials refused during device discovery: %s", err)
             raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
         except MowerAPIError as err:
             _LOGGER.error("Failed to discover devices: %s", err)
@@ -288,10 +275,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][entry.entry_id] = {
             "client": client,
             "health": health,
-            "api": api,
             "devices": devices,
             "coordinators": coordinators,
-            "oauth_session": oauth_session,
         }
 
         # The platforms first: the location sensors restore their last

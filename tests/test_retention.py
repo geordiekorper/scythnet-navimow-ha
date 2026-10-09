@@ -1,9 +1,7 @@
 """The recorder-retention suggestion: an ignorable repair issue."""
-import tempfile
 import unittest
 from types import SimpleNamespace
 
-from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.recorder import DATA_INSTANCE
 
@@ -14,14 +12,12 @@ from custom_components.navimow.retention import (
     async_check_recorder_retention,
     retention_issue_id,
 )
+from tests.fakes import hass_for
 
 
 class RetentionIssueTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.hass = HomeAssistant(self.temp.name)
-        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.hass = hass_for(self)
         await ir.async_load(self.hass)
         self.registry = ir.async_get(self.hass)
         self.entry = SimpleNamespace(entry_id="entry-1")
@@ -81,3 +77,4 @@ class RetentionIssueTest(unittest.IsolatedAsyncioTestCase):
         async_check_recorder_retention(self.hass, self.entry)
         await async_remove_entry(self.hass, self.entry)
         self.assertIsNone(self.issue())
+
