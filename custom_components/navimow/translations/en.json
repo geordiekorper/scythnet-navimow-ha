@@ -42,6 +42,12 @@
       }
     }
   },
+  "issues": {
+    "recorder_retention": {
+      "title": "Keep more mower history",
+      "description": "The recorder keeps {days} days of history (recorder: purge_keep_days in configuration.yaml). This integration's entities are the mower's whole record: every position, task reading, state report and status poll. Keep {suggested} days or more if the record should outlast a short absence; an application that reads the mower's history from Home Assistant can go back no further than the recorder keeps. Ignore this if {days} days is what you want."
+    }
+  },
   "entity": {
     "sensor": {
       "battery": {

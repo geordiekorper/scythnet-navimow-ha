@@ -8,15 +8,15 @@ from homeassistant.components.lawn_mower import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from mower_sdk.api import MowerAPI
-from mower_sdk.models import DeviceStateMessage, MowerCommand
+from mower_sdk.models import MowerCommand, MowerError, MowerStatus
+from mower_sdk.navimow_client import MowerState
 
 from .commands import async_send_command
 from .const import DOMAIN, MOWER_STATUS_TO_ACTIVITY
 from .coordinator import NavimowCoordinator
+from .entity import device_info
 
 
 async def async_setup_entry(
@@ -25,24 +25,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up lawn mower entities from a config entry."""
-    data = hass.data[DOMAIN][config_entry.entry_id]
-    api: MowerAPI = data["api"]
-    devices = data["devices"]
-    coordinators: dict[str, NavimowCoordinator] = data["coordinators"]
-
-    entities = []
-    for device in devices:
-        entities.append(
-            NavimowLawnMower(
-                coordinator=coordinators[device.id],
-                api=api,
-                device_id=device.id,
-                device_name=device.name,
-                device_info=device,
-            )
-        )
-
-    async_add_entities(entities)
+    coordinators: dict[str, NavimowCoordinator] = hass.data[DOMAIN][config_entry.entry_id]["coordinators"]
+    async_add_entities(NavimowLawnMower(coordinator) for coordinator in coordinators.values())
 
 
 class NavimowLawnMower(CoordinatorEntity[NavimowCoordinator], LawnMowerEntity):
@@ -54,32 +38,14 @@ class NavimowLawnMower(CoordinatorEntity[NavimowCoordinator], LawnMowerEntity):
         | LawnMowerEntityFeature.DOCK
     )
 
-    def __init__(
-        self,
-        coordinator: NavimowCoordinator,
-        api: MowerAPI,
-        device_id: str,
-        device_name: str,
-        device_info: Any,
-    ) -> None:
+    def __init__(self, coordinator: NavimowCoordinator) -> None:
         """Initialize the lawn mower entity."""
         super().__init__(coordinator)
-        self._api = api
-        self._device_id = device_id
-        self._device_name = device_name
-        self._device_info = device_info
-
-        # 设置实体属性
-        self._attr_name = device_name
-        self._attr_unique_id = f"{DOMAIN}_{device_id}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._device_id)},
-            name=self._device_name,
-            manufacturer="Navimow",
-            model=device_info.model or "Unknown",
-            sw_version=device_info.firmware_version or None,
-            serial_number=device_info.serial_number or self._device_id,
-        )
+        device = coordinator.device
+        self._device_id = device.id
+        self._attr_name = device.name
+        self._attr_unique_id = f"{DOMAIN}_{device.id}"
+        self._attr_device_info = device_info(device)
 
     @property
     def available(self) -> bool:
@@ -99,7 +65,7 @@ class NavimowLawnMower(CoordinatorEntity[NavimowCoordinator], LawnMowerEntity):
         state = self.coordinator.get_device_state()
         if not state:
             return None
-        activity = MOWER_STATUS_TO_ACTIVITY.get(state.state)
+        activity = MOWER_STATUS_TO_ACTIVITY.get(state.status.value)
         if activity is None:
             return None
         return LawnMowerActivity(activity)
@@ -107,48 +73,57 @@ class NavimowLawnMower(CoordinatorEntity[NavimowCoordinator], LawnMowerEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
-        state: DeviceStateMessage | None = self.coordinator.get_device_state()
+        state: MowerState | None = self.coordinator.get_device_state()
         attrs = self.coordinator.get_device_attributes()
         if not state:
             return {}
+        # The exact state: the SDK's name, or the cloud's own text for one the
+        # SDK cannot name (isLifted was seen), as before the client.
+        status = state.raw_state if state.status is MowerStatus.UNKNOWN else state.status.value
         attributes: dict[str, Any] = {
             "battery": state.battery,
-            "status": state.state,
+            "status": status,
         }
-        if state.signal_strength is not None:
-            attributes["signal_strength"] = state.signal_strength
-        if state.position:
-            attributes["position"] = state.position
-        if state.error:
-            attributes["error"] = state.error
-        if state.metrics:
-            attributes["metrics"] = state.metrics
+        # The rest of the observation: the state message, or the REST status
+        # when that is what the state was built from.
+        source = state.message if state.message is not None else state.rest_status
+        signal_strength = getattr(source, "signal_strength", None)
+        if signal_strength is not None:
+            attributes["signal_strength"] = signal_strength
+        position = getattr(source, "position", None)
+        if position:
+            attributes["position"] = position
+        if state.message is not None:
+            if state.message.error:
+                attributes["error"] = state.message.error
+            if state.message.metrics:
+                attributes["metrics"] = state.message.metrics
+        elif state.error_code is not MowerError.NONE:
+            attributes["error"] = {"code": state.error_code.value, "message": state.error_message}
         if attrs:
             attributes["attributes"] = attrs.attributes
         return attributes
 
     async def async_start_mowing(self) -> dict[str, Any]:
         """Start mowing."""
-        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.START)
+        return await async_send_command(self.coordinator, self._device_id, MowerCommand.START)
 
     async def async_pause(self) -> dict[str, Any]:
         """Pause mowing."""
-        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.PAUSE)
+        return await async_send_command(self.coordinator, self._device_id, MowerCommand.PAUSE)
 
     async def async_dock(self) -> dict[str, Any]:
         """Dock the mower."""
-        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.DOCK)
+        return await async_send_command(self.coordinator, self._device_id, MowerCommand.DOCK)
 
     async def async_resume(self) -> dict[str, Any]:
         """Resume mowing."""
-        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.RESUME)
+        return await async_send_command(self.coordinator, self._device_id, MowerCommand.RESUME)
 
     async def async_navimow_command(self, command: str) -> dict[str, Any]:
         """Any command by name (navimow.command), with its outcome."""
-        return await async_send_command(
-            self._api, self.coordinator, self._device_id, MowerCommand(command)
-        )
+        return await async_send_command(self.coordinator, self._device_id, MowerCommand(command))
 
     async def async_stop(self) -> dict[str, Any]:
         """Pause the task using Navimow's stop command."""
-        return await async_send_command(self._api, self.coordinator, self._device_id, MowerCommand.STOP)
+        return await async_send_command(self.coordinator, self._device_id, MowerCommand.STOP)

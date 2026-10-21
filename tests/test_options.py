@@ -1,23 +1,18 @@
-"""REST poll interval option: form, bounds, and applying it without a reload."""
-import tempfile
+"""REST poll interval option: form, bounds, and applying it through a reload."""
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant
 
 from custom_components.navimow import _async_options_updated
 from custom_components.navimow.config_flow import NavimowOptionsFlowHandler
-from custom_components.navimow.const import DOMAIN
+from tests.fakes import hass_for
 
 
 class OptionsTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.hass = HomeAssistant(self.temp.name)
-        self.addAsyncCleanup(self.hass.async_stop, force=True)
+        self.hass = hass_for(self)
 
     async def form_schema(self, options):
         flow = NavimowOptionsFlowHandler(SimpleNamespace(options=options))
@@ -48,15 +43,11 @@ class OptionsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["type"], "create_entry")
         self.assertEqual(result["data"], {"rest_poll_seconds": 60})
 
-    async def test_changed_option_reaches_the_running_poller(self):
-        poller = SimpleNamespace(async_set_interval=Mock())
-        health = SimpleNamespace(note_settings_changed=Mock())
-        self.hass.data[DOMAIN] = {"entry-1": {"rest_poller": poller, "health": health}}
+    async def test_a_changed_option_reloads_the_entry(self):
+        # The client takes its poll interval at construction; a reload
+        # rebuilds it with the new one, and the entities keep their state.
+        hass = SimpleNamespace(config_entries=SimpleNamespace(async_reload=AsyncMock()))
         entry = SimpleNamespace(entry_id="entry-1", options={"rest_poll_seconds": 90})
-        await _async_options_updated(self.hass, entry)
-        poller.async_set_interval.assert_called_once_with(90)
-        health.note_settings_changed.assert_called_once()
+        await _async_options_updated(hass, entry)
+        hass.config_entries.async_reload.assert_awaited_once_with("entry-1")
 
-    async def test_listener_without_a_poller_is_a_no_op(self):
-        entry = SimpleNamespace(entry_id="gone", options={})
-        await _async_options_updated(self.hass, entry)  # does not raise

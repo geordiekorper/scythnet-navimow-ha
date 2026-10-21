@@ -1,9 +1,8 @@
 """The Navimow integration."""
 import asyncio
-from collections.abc import Awaitable, Callable
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import urlparse
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -15,9 +14,7 @@ from homeassistant.exceptions import (
 )
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from mower_sdk.api import MowerAPI
 from mower_sdk.errors import MowerAPIError
-from mower_sdk.sdk import NavimowSDK
 
 # First: whether the mower_sdk on disk is the distribution the manifest
 # requires. The modules below may use names only navimow-sdk-community has,
@@ -30,21 +27,24 @@ from .const import (
     CLIENT_ID,
     CLIENT_SECRET,
     API_BASE_URL,
-    MQTT_BROKER,
-    MQTT_PORT,
-    MQTT_USERNAME,
-    MQTT_PASSWORD,
     REST_POLL_SECONDS,
     CONF_REST_POLL_SECONDS,
 )
+from .retention import (
+    async_check_recorder_retention,
+    async_delete_recorder_retention_issue,
+)
 
 if sdk_check.PROBLEM is None:
+    from mower_sdk.errors import MowerAuthRequiredError
+    from mower_sdk.navimow_client import NavimowClient
+    from mower_sdk.watchdog import MqttWatchdog
+
+    from .commands import refused_credentials, start_reauth
     from .coordinator import NavimowCoordinator
+    from .health import CollectorHealth
+    from .polls import ObservedMowerAPI
     from .services import async_setup_services, async_unload_services
-    from .health import CollectorHealth, device_id_from_topic
-    from .rest_poll import RestPoller
-    from .session import MqttSession
-    from .watchdog import MqttWatchdog
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.debug("Navimow module imported (__init__.py)")
@@ -70,102 +70,107 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
-def _attach_mqtt_hooks(
-    sdk: NavimowSDK,
-    health: "CollectorHealth",
-    devices: list[Any],
-    on_connect_fail: Callable[[], Awaitable[None]] | None = None,
-) -> None:
-    """Report the SDK client's connection events to ``health``.
+def token_provider(oauth_session: Any, health: "CollectorHealth") -> Callable[[], Awaitable[str | None]]:
+    """The client's token provider: Home Assistant's OAuth session.
 
-    The client runs these hooks on the event loop, after it has counted the
-    event and recorded its reason (health reads both from the client), for
-    every paho client it builds, rebuilt ones included. Attach them before
-    connecting, so no event is missed. ``on_connect_fail`` runs after a
-    refused connection (the broker credentials refresh); a disconnect only
-    changes the health, since paho reconnects with the stored credentials.
+    The client awaits it before every operation that sends a token (each
+    poll, each command, a connect, a rebuild, a credential refresh), so the
+    token is refreshed when due and never on a schedule of the client's own.
+    A refresh that fails for a transient reason (a network error, say) keeps
+    the cached token, so a flaky refresh does not fail a poll; a refresh Home
+    Assistant refuses for good raises ConfigEntryAuthFailed, which fails the
+    operation and, through the client's on_error, starts reauthentication.
     """
-    mqtt = sdk.mqtt
 
-    async def _on_connected() -> None:
-        health.note_connected()
-        _LOGGER.info(
-            "MQTT connected callback: broker=%s port=%s ws_path=%s client_id=%s",
-            mqtt.broker,
-            mqtt.port,
-            mqtt.ws_path,
-            mqtt.client_id,
-        )
-
-    async def _on_ready() -> None:
-        _LOGGER.info(
-            "MQTT ready callback: subscribed to downlink topics on broker=%s port=%s client_id=%s",
-            mqtt.broker,
-            mqtt.port,
-            mqtt.client_id,
-        )
-
-    async def _on_disconnected() -> None:
-        health.note_disconnected()
-        _LOGGER.debug(
-            "MQTT disconnected callback: broker=%s port=%s ws_path=%s client_id=%s reason=%s",
-            mqtt.broker,
-            mqtt.port,
-            mqtt.ws_path,
-            mqtt.client_id,
-            mqtt.last_disconnect_reason,
-        )
-
-    async def _on_connect_fail(reason: str) -> None:
-        # A refused CONNACK, or no CONNACK at all (a network failure, or the
-        # bearer token refused at the WebSocket upgrade); paho keeps retrying.
-        health.note_connect_failed()
-        _LOGGER.debug("MQTT connect failed: %s", reason)
-        if on_connect_fail is not None:
-            await on_connect_fail()
-
-    @callback
-    def _on_raw(topic: str, _payload: bytes) -> None:
-        # Every message the client receives, the reconnect-time empty array
-        # included; the client has already timed it.
-        device_id = device_id_from_topic(topic)
-        if device_id:
-            health.note_message(device_id)
-
-    mqtt.on_connected = _on_connected
-    mqtt.on_ready = _on_ready
-    mqtt.on_disconnected = _on_disconnected
-    mqtt.on_connect_fail = _on_connect_fail
-    sdk.on_raw(_on_raw)
-
-
-def _attach_message_callbacks(sdk: NavimowSDK, coordinators: dict[str, Any]) -> None:
-    """Hand the SDK's decoded location entries, and every message it did not
-    apply or applied with something unknown in it, to the device's
-    coordinator (``coordinators`` may be filled later)."""
-
-    @callback
-    def _on_location(message: Any) -> None:
-        # One per applied entry, in the order applied, on the event loop.
-        coordinator = coordinators.get(message.device_id)
-        if coordinator is not None:
-            coordinator.ingest_location(message)
-
-    @callback
-    def _on_rejected(message: Any) -> None:
-        # Any channel: a late, implausibly stamped or unparsable state
-        # message, a state field nobody knows, a malformed event or
-        # attributes payload, a location entry the decoder refused. Recorded
-        # with the payload as the SDK received it, once per message.
-        coordinator = coordinators.get(message.device_id)
-        if coordinator is not None:
-            coordinator.record_rejected(
-                message.channel, message.topic, message.reason,
-                message.payload.decode("utf-8", "replace"), list(message.reasons),
+    async def provider() -> str | None:
+        try:
+            await oauth_session.async_ensure_token_valid()
+        except ConfigEntryAuthFailed:
+            raise
+        except Exception as err:  # noqa: BLE001 - the cached token may still work
+            _LOGGER.warning(
+                "Token refresh failed (likely transient), keeping the cached token: %s", err
             )
+        token = oauth_session.token
+        access_token = token.get("access_token") if token else None
+        if access_token:
+            health.note_token(token.get("expires_at"))
+        return access_token
 
-    sdk.on_location(_on_location)
-    sdk.on_rejected(_on_rejected)
+    return provider
+
+
+def error_handler(hass: HomeAssistant, entry: ConfigEntry, health: "CollectorHealth") -> Callable[[str, Exception], None]:
+    """The client's on_error: a failure on its own schedule.
+
+    The client has logged it with its traceback. A poll failure (the clock's
+    poll, or the one after a command) shows on collector_status until the
+    next poll succeeds; refused credentials, from the cloud or from Home
+    Assistant's own token refresh, start reauthentication, the one failure
+    only the integration can act on.
+    """
+
+    @callback
+    def on_error(operation: str, exc: Exception) -> None:
+        if operation in ("poll", "command_poll"):
+            health.note_poll_error(str(exc) or type(exc).__name__)
+        if refused_credentials(exc):
+            start_reauth(hass, entry, f"the client's {operation}", exc)
+
+    return on_error
+
+
+def facade_hooks(sdk: Any, health: "CollectorHealth", coordinators: dict[str, Any]) -> None:
+    """Register on the SDK facade what the client does not forward: every
+    message seen on a mower's topics, applied or not, for the last_message
+    sensor; and every applied location entry, the coordinator's per-entry
+    evidence (note_location_entry says why). The facade calls both on the
+    event loop, the entry callback after the client's own handler for the
+    same entry, so the state built from it has reached the coordinator first.
+    """
+    sdk.on_message_seen(lambda device_id, channel, received_at: health.note_message(device_id))
+
+    @callback
+    def on_location(message: Any) -> None:
+        coordinator = coordinators.get(message.device_id)
+        if coordinator is not None:
+            coordinator.note_location_entry(message)
+
+    sdk.on_location(on_location)
+
+
+def watchdog_factory(
+    health: "CollectorHealth", coordinators: dict[str, Any]
+) -> Callable[[Any], Any]:
+    """The client's watchdog factory, which the client calls with the facade
+    the moment it has built it, before the feed connects: the one point at
+    which hooks can be put on the facade so that no message, not even one
+    that arrives while the connect is still under way, is missed. It
+    registers the facade hooks and returns the SDK's own watchdog with its
+    defaults, as the client would have built it."""
+
+    def factory(sdk: Any) -> Any:
+        facade_hooks(sdk, health, coordinators)
+        return MqttWatchdog(sdk)
+
+    return factory
+
+
+def status_observer(
+    coordinators: dict[str, Any], health: "CollectorHealth"
+) -> Callable[[dict[str, Any], Any], None]:
+    """Every successful status poll (polls.py): each reply to its mower's
+    coordinator, and the poll shown healthy."""
+
+    @callback
+    def on_statuses(statuses: dict[str, Any], polled_at: Any) -> None:
+        for device_id, status in statuses.items():
+            coordinator = coordinators.get(device_id)
+            if coordinator is not None:
+                coordinator.note_rest_status(status, polled_at)
+        health.note_poll_ok()
+
+    return on_statuses
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -175,13 +180,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Navimow cannot start: %s", sdk_check.PROBLEM)
         raise ConfigEntryError(sdk_check.PROBLEM)
     hass.data.setdefault(DOMAIN, {})
-
-    def _mask_secret(value: str | None) -> str:
-        if not value:
-            return "<empty>"
-        if len(value) <= 4:
-            return "*" * len(value)
-        return f"{value[:2]}***{value[-2:]}"
 
     try:
         # Get the OAuth2 implementation
@@ -196,29 +194,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, entry, implementation
         )
 
-        token: dict[str, Any] | None = None
-        if hasattr(oauth_session, "async_get_valid_token"):
-            try:
-                token = await oauth_session.async_get_valid_token()
-            except AttributeError:
-                token = None
-        if not token and hasattr(oauth_session, "async_ensure_token_valid"):
-            await oauth_session.async_ensure_token_valid()
-            token = oauth_session.token
-        if not token and hasattr(oauth_session, "async_get_access_token"):
-            access_token_value = await oauth_session.async_get_access_token()
-            token = {"access_token": access_token_value} if access_token_value else None
-        if not token:
-            # Final fallback for older HA versions storing token on the entry.
-            token = entry.data.get("token")
-        if not token:
-            raise ConfigEntryAuthFailed("No valid token available")
-        access_token = token.get("access_token")
+        # The first token, refreshed if due; a refresh that fails here is
+        # retried through ConfigEntryNotReady by the handler below. Every
+        # later one comes through the client's token provider.
+        await oauth_session.async_ensure_token_valid()
+        token = oauth_session.token
+        access_token = token.get("access_token") if token else None
         if not access_token:
             raise ConfigEntryAuthFailed("No access token in token data")
 
-        # Create the MowerAPI instance
-        api = MowerAPI(
+        # The REST client: the client polls through it, and the integration
+        # sees every status reply it gets (polls.py).
+        api = ObservedMowerAPI(
             session=async_get_clientsession(hass),
             token=access_token,
             base_url=entry.data.get("api_base_url", API_BASE_URL),
@@ -228,6 +215,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             devices = await api.async_get_devices()
             _LOGGER.info("Discovered %d Navimow device(s)", len(devices))
+        except MowerAuthRequiredError as err:
+            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
         except MowerAPIError as err:
             _LOGGER.error("Failed to discover devices: %s", err)
             raise ConfigEntryNotReady(f"Failed to discover devices: {err}") from err
@@ -238,183 +227,150 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
 
         if not devices:
-            _LOGGER.warning("No Navimow devices found")
+            # The client refuses to connect without a device to subscribe,
+            # and the broker has never been seen to deliver on a wildcard.
+            # Retried, so a mower added to the account appears on its own.
+            raise ConfigEntryNotReady("No Navimow devices found")
 
-        # Get the MQTT connection info and create the SDK
-        try:
-            mqtt_info = await api.async_get_mqtt_user_info()
-        except MowerAPIError as err:
-            _LOGGER.error("Failed to get MQTT info: %s", err)
-            raise ConfigEntryNotReady(f"Failed to get MQTT info: {err}") from err
-
-        mqtt_host = mqtt_info.get("mqttHost") or entry.data.get(
-            "mqtt_broker", MQTT_BROKER
-        )
-        mqtt_url = mqtt_info.get("mqttUrl")
-        mqtt_username = mqtt_info.get("userName") or entry.data.get(
-            "mqtt_username", MQTT_USERNAME
-        )
-        mqtt_password = mqtt_info.get("pwdInfo") or entry.data.get(
-            "mqtt_password", MQTT_PASSWORD
-        )
-        mqtt_port = 443 if mqtt_url else entry.data.get("mqtt_port", MQTT_PORT)
-        ws_path = mqtt_url
-        if mqtt_url:
-            parsed = urlparse(mqtt_url)
-            if parsed.scheme in ("ws", "wss") and parsed.hostname:
-                if not mqtt_host:
-                    mqtt_host = parsed.hostname
-                if parsed.port:
-                    mqtt_port = parsed.port
-                ws_path = parsed.path or "/"
-                if parsed.query:
-                    ws_path = f"{ws_path}?{parsed.query}"
-        auth_headers = {"Authorization": f"Bearer {access_token}"} if ws_path else None
-
-        _LOGGER.info(
-            "MQTT connection parameters: broker=%s port=%s mqtt_url=%s ws_path=%s username=%s password=%s auth_header=%s",
-            mqtt_host,
-            mqtt_port,
-            mqtt_url,
-            ws_path,
-            _mask_secret(mqtt_username),
-            _mask_secret(mqtt_password),
-            "Bearer <masked>" if auth_headers else "<none>",
-        )
-
-        # device id -> coordinator, filled below; the SDK's callbacks read it.
+        # The client: one for the account. It lists nothing (the devices are
+        # given), polls the status every poll_interval seconds, runs the MQTT
+        # watchdog, rebuilds the connection on a request, fetches the broker
+        # credentials again after a refused connection, and merges the two
+        # sources into one state per mower. The token comes from Home
+        # Assistant through the provider. Built before its callbacks are
+        # registered and connected after, so nothing is missed.
+        health = CollectorHealth()
+        # device id -> coordinator, filled below; the hooks read it later.
         coordinators: dict[str, NavimowCoordinator] = {}
-        _mqtt_refresh_lock = asyncio.Lock()
-        # A one-element list works as a mutable flag so that async_unload_entry
-        # (a different function scope) can set it.
-        _unload_flag: list[bool] = [False]
-
-        async def _probe_mqtt_status(sdk: NavimowSDK) -> None:
-            await asyncio.sleep(5)
-            _LOGGER.info("MQTT status probe (5s): connected=%s", sdk.is_connected)
-            await asyncio.sleep(25)
-            _LOGGER.info("MQTT status probe (30s): connected=%s", sdk.is_connected)
-
-        def _create_sdk(api: MowerAPI) -> NavimowSDK:
-            sdk = NavimowSDK(
-                broker=mqtt_host,
-                port=mqtt_port,
-                username=mqtt_username,
-                password=mqtt_password,
-                ws_path=ws_path,
-                auth_headers=auth_headers,
-                loop=hass.loop,
-                records=devices,
-                reconnect_min_delay=1,
-                reconnect_max_delay=60,
-                subscribe_location=True,
-                # Late or implausibly stamped state messages are reported
-                # (on_rejected) and never applied or cached.
-                reject_late_state=True,
-            )
-            return sdk
-
-        # Built without connecting (building sets up TLS, which blocks), so
-        # the hooks are in place before the first event.
-        sdk = await hass.async_add_executor_job(_create_sdk, api)
-        health = CollectorHealth(sdk.mqtt)
-        session = MqttSession(
-            hass, sdk, api, oauth_session, health, _unload_flag, _mqtt_refresh_lock, access_token
+        poll_interval = entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS)
+        client = NavimowClient(
+            api,
+            devices=devices,
+            loop=hass.loop,
+            token_provider=token_provider(oauth_session, health),
+            poll_interval=poll_interval,
+            reconnect_min_delay=1,
+            reconnect_max_delay=60,
+            watchdog=watchdog_factory(health, coordinators),
         )
-        _attach_mqtt_hooks(sdk, health, devices, session.async_refresh_credentials)
-        _attach_message_callbacks(sdk, coordinators)
+        health.client = client
+        health.poll_interval = poll_interval
+        client.on_connection(health.note_connection)
+        client.on_error(error_handler(hass, entry, health))
+
+        @callback
+        def _on_rebuild_request(request: Any) -> None:
+            _LOGGER.warning("MQTT watchdog: %s", request.reason)
+
+        client.on_rebuild_request(_on_rebuild_request)
 
         for device in devices:
             coordinator = NavimowCoordinator(
-                hass=hass,
-                sdk=sdk,
-                api=api,
-                device=device,
-                oauth_session=oauth_session,
-                config_entry=entry,
+                hass=hass, client=client, device=device, config_entry=entry
             )
-            coordinator.health = health
-            coordinator.mqtt_session = session
-            await coordinator.async_setup()
-            await coordinator.async_config_entry_first_refresh()
+            coordinator.async_register()
             coordinators[device.id] = coordinator
+        api.on_statuses = status_observer(coordinators, health)
 
-        # Steady REST status poll for all of this entry's mowers, independent
-        # of MQTT health (the coordinators' own fetch is only a fallback).
-        rest_poller: RestPoller | None = None
-        if coordinators:
-            first = next(iter(coordinators.values()))
-            rest_poller = RestPoller(
-                hass, api, coordinators,
-                entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS),
-                first._async_ensure_valid_token,
-            )
-            health.poller = rest_poller
-            watchdog = MqttWatchdog(hass, health, coordinators, session.async_rebuild)
-
-            @callback
-            def _on_poll_result(ok: bool) -> None:
-                health.note_poll()
-                if ok:  # the mismatch rule needs this poll's replies
-                    watchdog.async_check_after_poll()
-
-            rest_poller.on_result = _on_poll_result
-            watchdog.async_start()
-            entry.async_on_unload(watchdog.async_stop)
-            for coordinator in coordinators.values():
-                coordinator.rest_poller = rest_poller
-            rest_poller.async_start()
-            entry.async_on_unload(rest_poller.async_stop)
-            entry.async_on_unload(entry.add_update_listener(_async_options_updated))
-
-        # Store the data
         hass.data[DOMAIN][entry.entry_id] = {
-            "rest_poller": rest_poller,
+            "client": client,
             "health": health,
-            "session": session,
-            "sdk": sdk,
-            "api": api,
             "devices": devices,
             "coordinators": coordinators,
-            "oauth_session": oauth_session,
-            "unload_flag": _unload_flag,
-            "mqtt_lock": _mqtt_refresh_lock,
         }
 
-        # Forward to the platforms
+        # The platforms first: the location sensors restore their last
+        # states into the coordinators, which hand the record to the client;
+        # the client installs it when it builds the decoder, before the first
+        # message can arrive. Its connect polls every mower once, so the
+        # entities show a state before the feed opens.
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        # The location sensors have restored their last states: the SDK gets
-        # the restored records before the first message can arrive, then the
-        # client connects. The first refresh above needed no MQTT.
         for coordinator in coordinators.values():
             coordinator.async_finish_restore()
-        _LOGGER.info(
-            "Invoking SDK MQTT connect: broker=%s port=%s ws_path=%s",
-            mqtt_host,
-            mqtt_port,
-            ws_path,
-        )
-        await session.start()
-        hass.async_create_task(_probe_mqtt_status(sdk))
+        await _async_connect_or_undo(hass, entry, client)
+        entry.async_on_unload(entry.add_update_listener(_async_options_updated))
         async_setup_services(hass)
+        # A suggestion, as a repair issue the owner can ignore: the entities
+        # are the mower's whole record, and 10 days is the recorder's default.
+        async_check_recorder_retention(hass, entry)
 
         return True
 
-    except (ConfigEntryAuthFailed, ConfigEntryError):
+    except (ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady):
         raise
     except Exception as err:
         _LOGGER.exception("Error setting up Navimow integration: %s", err)
         raise ConfigEntryNotReady(f"Error setting up integration: {err}") from err
 
 
+async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client: Any) -> None:
+    """Connect the client; a connect that does not complete undoes the setup so far.
+
+    The platforms were forwarded and the entry's data stored before the
+    connect (the restore needs that order), so a connect that fails, or is
+    cancelled while Home Assistant shuts down or reloads, unloads them again
+    and drops the data before the error goes on: the retry then sets up
+    cleanly, and no entity outlives a failed setup. Refused credentials, the
+    cloud's or Home Assistant's own, become ConfigEntryAuthFailed; anything
+    else the cloud did (a request that failed, a credential reply without a
+    WebSocket path) is retried as ConfigEntryNotReady.
+
+    The connect is shielded from the cancellation: part of it runs in an
+    executor thread (the facade's build and its connect), which a cancelled
+    await cannot stop, and the client marks itself closed when its connect
+    is interrupted, after which its disconnect does nothing. So a cancelled
+    setup lets the connect end on its own (shielded again, so a second
+    cancellation does not interrupt the client either), disconnects the
+    client when the connect completed, whether before or after the
+    cancellation arrived, and only then unwinds. A setup cancelled a second
+    time stops waiting; the connect then undoes itself when it completes.
+    """
+    loop = asyncio.get_running_loop()
+    connect = asyncio.ensure_future(client.async_connect())
+    try:
+        await asyncio.shield(connect)
+    except BaseException as err:
+        if not connect.done():
+            try:
+                await asyncio.shield(connect)
+            except BaseException:  # noqa: BLE001 - its failure, or a second cancellation
+                pass
+        if connect.done():
+            if not connect.cancelled() and connect.exception() is None:
+                # Completed, before or after the cancellation: stop what it started.
+                await asyncio.shield(client.async_disconnect())
+        else:
+            # Cancelled twice: nobody waits any longer, so the connect takes
+            # down what it completes, if it completes.
+            def _undo_when_done(done: asyncio.Future) -> None:
+                if not done.cancelled() and done.exception() is None:
+                    loop.create_task(client.async_disconnect())
+
+            connect.add_done_callback(_undo_when_done)
+            _LOGGER.warning(
+                "Navimow setup cancelled twice; the connect still under way disconnects itself"
+            )
+        await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        if isinstance(err, MowerAuthRequiredError):
+            raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
+        if isinstance(err, (ConfigEntryAuthFailed, ConfigEntryNotReady)) or not isinstance(
+            err, Exception
+        ):
+            raise  # as it is: a refusal, or a cancellation
+        raise ConfigEntryNotReady(f"Failed to connect to the Navimow cloud: {err}") from err
+
+
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Apply a changed poll interval to the running poller, without a reload."""
-    data = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
-    poller = data.get("rest_poller")
-    if poller is not None:
-        poller.async_set_interval(entry.options.get(CONF_REST_POLL_SECONDS, REST_POLL_SECONDS))
-        if data.get("health") is not None:
-            data["health"].note_settings_changed()  # collector_status shows it
+    """A changed option (the poll interval) reaches the client through a
+    reload: the client takes its interval at construction. The feed
+    reconnects and the entities keep their state through it."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """The entry is deleted: its retention suggestion goes with it."""
+    async_delete_recorder_retention_issue(hass, entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -422,32 +378,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        # Clean up the data
-        if entry.entry_id in hass.data.get(DOMAIN, {}):
-            data = hass.data[DOMAIN][entry.entry_id]
-            # Mark as unloading so the disconnect callback does not trigger
-            # another credential refresh
-            if "unload_flag" in data:
-                data["unload_flag"][0] = True
-            sdk = data.get("sdk")
-            if sdk:
-                # A rebuild or credential refresh in flight holds this lock
-                # and may be about to start a new client: let it finish, so
-                # the client disconnected here is the last one.
-                lock = data.get("mqtt_lock")
-                if lock is not None:
-                    await lock.acquire()
-                try:
-                    sdk.disconnect()
-                except Exception as err:
-                    _LOGGER.warning("Error disconnecting MQTT: %s", err)
-                finally:
-                    if lock is not None:
-                        lock.release()
-
-            hass.data[DOMAIN].pop(entry.entry_id)
+        data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None) or {}
+        client = data.get("client")
+        if client is not None:
+            # Under the client's own lock: a rebuild or a credential refresh
+            # in flight finishes first, then the clock's tasks are cancelled
+            # and the MQTT client disconnected.
+            try:
+                await client.async_disconnect()
+            except Exception as err:  # noqa: BLE001 - the unload goes on
+                _LOGGER.warning("Error disconnecting from the Navimow cloud: %s", err)
         async_unload_services(hass)
 
     return unload_ok
-
-

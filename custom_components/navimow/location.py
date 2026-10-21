@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from mower_sdk.models import DeviceLocation
+from mower_sdk.location import TargetZone
 
 
 def _num(value: Any) -> float | None:
@@ -44,34 +44,7 @@ def _str(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
-# Mower status values during which the pose is the dock position. "idle" is
-# deliberately excluded: the mower can sit idle mid-lawn after a manual stop.
-DOCKED_STATES = frozenset({"docked", "charging"})
-
-# Cap on the effective sample count for the dock average. Once reached, new
-# samples keep a constant 1/DOCK_MAX_SAMPLES weight, so the estimate tracks a
-# physically moved dock instead of being frozen by historical samples.
-DOCK_MAX_SAMPLES = 200
-
-
-def update_dock_estimate(
-    dock: dict | None, x: float, y: float, max_samples: int = DOCK_MAX_SAMPLES
-) -> dict:
-    """Fold one docked pose sample into the running dock-position average.
-
-    Returns a new dict {"x", "y", "n"}; pass the previous result (or None)
-    as ``dock``. The capped incremental mean smooths RTK jitter while still
-    converging on a new location if the dock is moved.
-    """
-    d = dock or {"x": 0.0, "y": 0.0, "n": 0}
-    n = min(int(d.get("n", 0)), max_samples - 1)
-    return {
-        "x": (d["x"] * n + float(x)) / (n + 1),
-        "y": (d["y"] * n + float(y)) / (n + 1),
-        "n": n + 1,
-    }
-
-
+# The position sensor's source attribute: every pose comes from the location channel.
 POSE_SOURCE = "mqtt_location"
 
 # The mowing-zone sensor's attributes: attribute name -> DeviceLocation field.
@@ -95,7 +68,10 @@ TASK_FIELDS = tuple(name for name in TASK_ATTRIBUTES.values() if name != "route_
 # startup; the coordinator assembles the groups into one DeviceLocation and
 # hands it to the SDK, and a group counts as restored until a live entry of
 # the type that replaces it is applied.
-RESTORE_GROUPS = ("pose", "task", "progress", "target", "delay")
+RESTORE_GROUPS = ("pose", "task", "progress", "target", "delay", "dock")
+
+# The dock sensors: their state is one coordinate of the SDK's dock estimate.
+DOCK_KEYS = ("dock_x", "dock_y")
 
 
 def _target_group(state: str | None, attrs: dict[str, Any]) -> dict[str, Any] | None:
@@ -114,7 +90,7 @@ def _target_group(state: str | None, attrs: dict[str, Any]) -> dict[str, Any] | 
     ids = [pid for pid in (_int(v) for v in pids)] if isinstance(pids, list) else None
     if ids is not None and None in ids:
         ids = None
-    if state in (TARGET_ALL, TARGET_NONE):
+    if state in (TargetZone.ALL.value, TargetZone.NONE.value):
         partition_ids = ids if ids is not None else []
     elif _int(state) is not None and ids:
         partition_ids = ids
@@ -162,6 +138,14 @@ def restore_location_groups(
         if pct is None or attrs.get("progress_source") != "route":
             return []  # a percentage fallback is restored with the task group
         return [("progress", {"route_progress": int(round(pct * 100))})]
+    if key in DOCK_KEYS:
+        # The estimate restores as one sample at least, so the decoder goes on
+        # averaging from it instead of starting over at the next docked pose.
+        value = _num(state)
+        if value is None:
+            return []
+        fields = {key: value, "dock_samples": max(_int(attrs.get("samples")) or 0, 1)}
+        return [("dock", fields)]
     if key == "zone":
         groups: list[tuple[str, dict[str, Any]]] = []
         target = _target_group(state, attrs)
@@ -176,29 +160,3 @@ def restore_location_groups(
             }))
         return groups
     return []
-
-
-# Target-zone sensor states beyond a partition id. The mower never reports
-# "mow all": it sends the same empty target report whether it is idle or mowing
-# everything, so TARGET_ALL is inferred from the mower's activity.
-TARGET_NONE = "none"
-TARGET_ALL = "all"
-# Activities during which an empty target means a mow-all task is under way.
-# "returning" is excluded: a dock command clears the target for the trip home.
-MOW_ALL_ACTIVITIES = frozenset({"mowing", "paused"})
-
-
-def target_zone(location: DeviceLocation | None, activity: str | None) -> int | str | None:
-    """State of the target-zone sensor.
-
-    None (unknown) until a target report has been received; the first
-    partition id when the report names zones; otherwise TARGET_ALL while the
-    mower is mowing or paused, and TARGET_NONE when it is not.
-    """
-    if location is None or location.partition_ids is None:
-        return None
-    if location.partition_ids:
-        return location.partition_ids[0]
-    if (activity or "").lower() in MOW_ALL_ACTIVITIES:
-        return TARGET_ALL
-    return TARGET_NONE

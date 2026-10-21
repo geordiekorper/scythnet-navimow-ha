@@ -42,6 +42,12 @@
       }
     }
   },
+  "issues": {
+    "recorder_retention": {
+      "title": "Mehr Mäher-Verlauf behalten",
+      "description": "Der Recorder behält {days} Tage Verlauf (recorder: purge_keep_days in der configuration.yaml). Die Entitäten dieser Integration sind die ganze Aufzeichnung des Mähers: jede Position, jeder Aufgabenstand, jede Zustandsmeldung und jede Statusabfrage. Behalten Sie {suggested} Tage oder mehr, wenn die Aufzeichnung eine kurze Abwesenheit überdauern soll; eine Anwendung, die den Verlauf des Mähers aus Home Assistant liest, kommt nicht weiter zurück, als der Recorder behält. Ignorieren Sie den Hinweis, wenn {days} Tage genügen."
+    }
+  },
   "entity": {
     "sensor": {
       "battery": {

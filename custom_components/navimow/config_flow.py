@@ -15,10 +15,6 @@ from .const import (
     CLIENT_ID,
     CLIENT_SECRET,
     API_BASE_URL,
-    MQTT_BROKER,
-    MQTT_PORT,
-    MQTT_USERNAME,
-    MQTT_PASSWORD,
     CONF_REST_POLL_SECONDS,
     REST_POLL_MAX_SECONDS,
     REST_POLL_MIN_SECONDS,
@@ -142,10 +138,6 @@ class NavimowOAuth2FlowHandler(
                 "auth_implementation": DOMAIN,
                 **data,  # 包含 token（由 HA 自动处理）
                 "api_base_url": API_BASE_URL,
-                "mqtt_broker": MQTT_BROKER,
-                "mqtt_port": MQTT_PORT,
-                "mqtt_username": MQTT_USERNAME,
-                "mqtt_password": MQTT_PASSWORD,
             },
         )
 

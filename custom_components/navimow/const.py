@@ -24,18 +24,10 @@ CLIENT_SECRET: Final = "57056e15-722e-42be-bbaa-b0cbfb208a52"
 # API 配置
 API_BASE_URL: Final = "https://navimow-fra.ninebot.com"
 
-# MQTT 配置
-# TODO: 需要提供实际的 MQTT broker 地址和端口
-MQTT_BROKER: Final = "mqtt.navimow.com"
-MQTT_PORT: Final = 1883
-MQTT_USERNAME: Final | None = None
-MQTT_PASSWORD: Final | None = None
-
-# 更新间隔（秒）
-UPDATE_INTERVAL: Final = 30
-
-# Steady REST status poll (rest_poll.py): the default interval, the floor an
-# option may set, and the longest wait after repeated failures (seconds).
+# The SDK client's steady REST status poll: the default interval and the
+# bounds the option allows (seconds). The client doubles the wait after a
+# failed poll, up to its own cap of 600 s, and comes back on the next
+# success.
 # 300 s and 60 s are the owner's decision of 8 Oct 2026 (bead lrh): the
 # cloud's limit on the status endpoint is unknown and an edition multiplies
 # the calls by its installs; an install that wants Scythnet's cadence sets
@@ -44,27 +36,9 @@ REST_POLL_SECONDS: Final = 300
 REST_POLL_MIN_SECONDS: Final = 60
 REST_POLL_MAX_SECONDS: Final = 600  # the most the option allows
 CONF_REST_POLL_SECONDS: Final = "rest_poll_seconds"  # entry option
-REST_POLL_MAX_BACKOFF: Final = 600
-# The cloud's REST status cache lags this long behind the mower (seconds); a
-# REST reading counts as newer than an MQTT report only past this age.
-REST_CACHE_LAG: Final = 120
-# A mower that is out sends a pose every 2 s; this long without a location
-# message while it mows or returns means the broker stopped delivering.
-LOCATION_SILENCE: Final = 180
-# The MQTT watchdog rebuilds the connection at most once per this long.
-WATCHDOG_DEBOUNCE: Final = 300
 
 # The last_message sensor is written at most once per this many seconds.
 LAST_MESSAGE_RESOLUTION: Final = 30
-
-# An extra REST poll this long after each command, to see its effect.
-COMMAND_POLL_DELAY: Final = 5
-
-# MQTT 超时时间（秒），超过该时间未收到消息则走 HTTP 兜底
-MQTT_STALE_SECONDS: Final = 300
-
-# HTTP 兜底最小拉取间隔（秒），避免频繁请求
-HTTP_FALLBACK_MIN_INTERVAL: Final = 3600
 
 # MowerStatus 到 LawnMowerActivity 的映射
 MOWER_STATUS_TO_ACTIVITY = {

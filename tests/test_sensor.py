@@ -8,16 +8,19 @@ from homeassistant.core import State
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from mower_sdk.location import LocationDecoder
-from mower_sdk.models import DeviceLocation
+from mower_sdk.models import MowerStatus
 
 from custom_components.navimow.coordinator import NavimowCoordinator
+from custom_components.navimow.location import DOCK_KEYS
 from custom_components.navimow.sensor import (
     RESTORING_KEYS,
     SENSOR_DESCRIPTIONS,
+    NavimowDockSensor,
     NavimowLocationSensor,
     NavimowSensor,
 )
 
+from tests.fakes import device
 from tests.test_location import FULL_TASK, POSE, RECEIVED, RECEIVED_AT
 
 DESCRIPTIONS = {d.key: d for d in SENSOR_DESCRIPTIONS}
@@ -28,32 +31,26 @@ LATER_AT = datetime.fromisoformat(LATER)
 
 
 class FakeCoordinator:
-    """The coordinator's location handling (ingest, restored groups) with
-    the rest stubbed."""
+    """The coordinator's location handling (the record, the restored groups)
+    on its initial state, with the rest stubbed."""
 
-    ingest_location = NavimowCoordinator.ingest_location
+    apply_location = NavimowCoordinator.apply_location
+    restore_location = NavimowCoordinator.restore_location
     is_group_restored = NavimowCoordinator.is_group_restored
     has_task_report = NavimowCoordinator.has_task_report
     get_delay_since = NavimowCoordinator.get_delay_since
-    _maybe_learn_dock = NavimowCoordinator._maybe_learn_dock
 
     def __init__(self):
-        self.device = SimpleNamespace(
-            id="dev-1", name="Mower", model="X430", firmware_version="1.0",
-            serial_number="SN1",
-        )
+        self.device = device()
         self._last_location = None
+        self._restored_location = None
+        self._restored_fields = {}
         self._restored_groups = set()
         self._has_task = False
         self._delay_since = None
-        self._last_state = None
-        self._dock = None
-        self.state = None  # a DeviceStateMessage-like object, or None
+        self.state = None  # a MowerState-like object (status), or None
 
-    def _build_data(self):
-        return None
-
-    def async_set_updated_data(self, _data):
+    def _publish(self):
         pass
 
     def get_device_location(self):
@@ -61,9 +58,6 @@ class FakeCoordinator:
 
     def get_device_state(self):
         return self.state
-
-    def get_dock_position(self):
-        return None
 
     def get_data_source(self):
         return "mqtt_push"
@@ -93,9 +87,10 @@ class SensorAttributesTest(unittest.TestCase):
         )
 
     def feed(self, *entries, received_at=RECEIVED_AT):
-        """One location message through the SDK's decoder and the coordinator."""
+        """One location message through the SDK's decoder; each applied
+        entry's record reaches the coordinator as a state would carry it."""
         for message in self.decoder.decode("dev-1", list(entries), received_at).messages:
-            self.coordinator.ingest_location(message)
+            self.coordinator.apply_location(message.location)
 
     def test_mowing_zone_exposes_the_task_group(self):
         self.feed(FULL_TASK)
@@ -264,17 +259,18 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertEqual(DESCRIPTIONS["mow_progress"].state_class, "measurement")
 
     def restore(self):
-        """A record as the sensors restore it after a restart, every group restored."""
-        location = DeviceLocation.from_dict({
-            "device_id": "dev-1", "x": 2.0, "y": 0.3, "vehicle_state": 1,
-            "pose_at": 1700000000000 - 5000, "pose_received_at": RECEIVED,
-            "current_zone": 2, "mowing_percentage": 100.0, "task_at": 1700000000032 - 5000,
-            "route_progress": 10000, "partition_ids": [3], "task_delay": False,
-        })
-        self.decoder.restore("dev-1", location)
-        self.coordinator._last_location = location
-        self.coordinator._restored_groups = {"pose", "task", "progress", "target", "delay"}
-        self.coordinator._has_task = True
+        """A record as the sensors restore it after a restart, every group
+        restored through the coordinator's own path."""
+        for group, fields in (
+            ("pose", {"x": 2.0, "y": 0.3, "vehicle_state": 1,
+                      "pose_at": 1700000000000 - 5000, "pose_received_at": RECEIVED}),
+            ("task", {"current_zone": 2, "mowing_percentage": 100.0, "task_at": 1700000000032 - 5000}),
+            ("progress", {"route_progress": 10000}),
+            ("target", {"partition_ids": [3]}),
+            ("delay", {"task_delay": False}),
+        ):
+            self.coordinator.restore_location(group, fields)
+        self.decoder.restore("dev-1", self.coordinator.get_device_location())
 
     def test_restored_marker_follows_each_group(self):
         self.restore()
@@ -335,11 +331,11 @@ class SensorAttributesTest(unittest.TestCase):
         self.assertIsNone(sensor.native_value)  # no target report yet
         self.feed({"time": 1700000242000, "type": 3})
         self.assertEqual(sensor.native_value, "none")  # docked, no state yet
-        self.coordinator.state = SimpleNamespace(state="mowing")
+        self.coordinator.state = SimpleNamespace(status=MowerStatus.MOWING)
         self.assertEqual(sensor.native_value, "all")
-        self.coordinator.state = SimpleNamespace(state="paused")
+        self.coordinator.state = SimpleNamespace(status=MowerStatus.PAUSED)
         self.assertEqual(sensor.native_value, "all")
-        self.coordinator.state = SimpleNamespace(state="returning")
+        self.coordinator.state = SimpleNamespace(status=MowerStatus.RETURNING)
         self.assertEqual(sensor.native_value, "none")
         self.feed({"partitionIds": [2], "time": 1700000300010, "type": 3})
         self.assertEqual(sensor.native_value, 2)
@@ -349,15 +345,48 @@ class SensorAttributesTest(unittest.TestCase):
         for key in ("zone", "mowing_zone", "mow_progress", "position_x"):
             self.assertIsNone(self.sensor(key).extra_state_attributes, key)
 
+    def dock_sensor(self, key):
+        return NavimowDockSensor(coordinator=self.coordinator, entity_description=DESCRIPTIONS[key])
+
+    def test_the_dock_is_learned_from_docked_poses(self):
+        x, y = self.dock_sensor("dock_x"), self.dock_sensor("dock_y")
+        self.assertIsNone(x.native_value)
+        self.assertEqual(x.extra_state_attributes, {"samples": 0, "source": "none", "is_restored": False})
+        self.feed(POSE)  # out mowing: not a dock sample
+        self.assertIsNone(x.native_value)
+        self.feed({**POSE, "postureX": "2.000", "postureY": "1.000", "vehicleState": 1, "time": 1700000002000})
+        self.feed({**POSE, "postureX": "2.200", "postureY": "1.000", "vehicleState": 2, "time": 1700000004000})
+        self.assertEqual((x.native_value, y.native_value), (2.1, 1.0))
+        self.assertEqual(x.extra_state_attributes, {"samples": 2, "source": "live", "is_restored": False})
+
+    def test_one_dock_coordinate_restores_on_its_own(self):
+        x, y = self.dock_sensor("dock_x"), self.dock_sensor("dock_y")
+        self.coordinator.restore_location("dock", {"dock_x": 2.0, "dock_samples": 3})
+        self.assertEqual(x.native_value, 2.0)
+        self.assertIsNone(y.native_value)
+        self.assertEqual(x.extra_state_attributes, {"samples": 3, "source": "restored", "is_restored": True})
+
+    def test_the_dock_restores_and_a_docked_pose_refines_it(self):
+        x = self.dock_sensor("dock_x")
+        self.coordinator.restore_location("dock", {"dock_x": 2.0, "dock_samples": 3})
+        self.coordinator.restore_location("dock", {"dock_y": 1.0, "dock_samples": 3})
+        self.assertEqual(x.native_value, 2.0)
+        self.assertEqual(x.extra_state_attributes, {"samples": 3, "source": "restored", "is_restored": True})
+        self.decoder.restore("dev-1", self.coordinator.get_device_location())
+        self.feed(POSE)  # a pose out on the lawn changes no dock field
+        self.assertTrue(x.extra_state_attributes["is_restored"])
+        self.feed({**POSE, "postureX": "2.400", "postureY": "1.000", "vehicleState": 1, "time": 1700000002000})
+        self.assertEqual(x.extra_state_attributes, {"samples": 4, "source": "live", "is_restored": False})
+        self.assertEqual(x.native_value, 2.1)
+
 
 class RestoreOnStartupTest(unittest.IsolatedAsyncioTestCase):
     def make_sensor(self, key):
         coordinator = FakeCoordinator()
         coordinator.restore_location = Mock()
         coordinator.async_add_listener = Mock(return_value=lambda: None)
-        sensor = NavimowLocationSensor(
-            coordinator=coordinator, entity_description=DESCRIPTIONS[key]
-        )
+        cls = NavimowDockSensor if key in DOCK_KEYS else NavimowLocationSensor
+        sensor = cls(coordinator=coordinator, entity_description=DESCRIPTIONS[key])
         return sensor, coordinator
 
     async def added(self, sensor, last):
@@ -390,6 +419,11 @@ class RestoreOnStartupTest(unittest.IsolatedAsyncioTestCase):
         coordinator.restore_location.assert_called_once_with(
             "delay", {"task_delay": False, "delay_received_at": None}
         )
+
+    async def test_dock_sensors_seed_the_dock_group(self):
+        sensor, coordinator = self.make_sensor("dock_x")
+        await self.added(sensor, State("sensor.dock_x", "2.07", {"samples": 12, "source": "live"}))
+        coordinator.restore_location.assert_called_once_with("dock", {"dock_x": 2.07, "dock_samples": 12})
 
     async def test_nothing_recorded_means_nothing_restored(self):
         sensor, coordinator = self.make_sensor("mowing_zone")

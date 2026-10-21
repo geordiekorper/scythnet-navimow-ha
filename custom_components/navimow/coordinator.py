@@ -1,54 +1,94 @@
-"""DataUpdateCoordinator for Navimow integration."""
+"""Per-mower coordinator, push-fed by the SDK's client.
+
+NavimowClient merges the MQTT state messages and the REST status polls into
+one MowerState per mower and delivers each new one through on_state; the
+coordinator keeps the latest, the last MQTT one (the data_source sensor
+shows the two sources side by side), every REST reply, the location record,
+and what the location sensors restored after a restart, and tells the
+entities. It asks for nothing itself: there is no update interval and no
+fetch of its own.
+"""
+from __future__ import annotations
+
 import logging
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from mower_sdk.api import MowerAPI
 from mower_sdk.models import (
     Device,
     DeviceAttributesMessage,
     DeviceEventMessage,
     DeviceLocation,
     DeviceLocationMessage,
-    DeviceStateMessage,
     DeviceStatus,
     REST_STATUS_KNOWN_FIELDS,
+    RejectedMessage,
 )
-from mower_sdk.sdk import NavimowSDK
+from mower_sdk.navimow_client import MowerState, NavimowClient, StateSource
 
-from .const import (
-    DOMAIN,
-    HTTP_FALLBACK_MIN_INTERVAL,
-    MQTT_STALE_SECONDS,
-    UPDATE_INTERVAL,
-)
-from .location import (
-    DOCKED_STATES,
-    update_dock_estimate,
-)
+from .const import DOMAIN
+from .location import TASK_FIELDS
 from .rejected import rejection_record
 
 _LOGGER = logging.getLogger(__name__)
 
+# The data_source sensor's labels for the client's sources. The labels are
+# the official integration's; its third one, mqtt_cache (a message adopted
+# from the SDK's cache because it arrived before the callback existed),
+# cannot occur with the client, which registers its handler at build.
+DATA_SOURCE_LABELS = {StateSource.MQTT: "mqtt_push", StateSource.REST: "http_fallback"}
 
-class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator for Navimow data updates."""
+# The record fields each restored group stands for. A group stays restored
+# until a live record differs from the restored one in these fields. The
+# decoder stamps each field's time with the entry that carried it (task_at
+# for every task entry, zone_at and progress_at for the zone and the route
+# reading), so a timed entry moves at least one of them even when it repeats
+# the values, and the SDK refuses an entry older than the restored marks.
+_GROUP_FIELDS: dict[str, tuple[str, ...]] = {
+    "pose": ("pose_at", "pose_received_at", "x", "y", "theta", "vehicle_state"),
+    "task": ("current_zone", "zone_at", *TASK_FIELDS),
+    "progress": ("route_progress", "progress_at"),
+    "target": ("target_at", "target_last_at", "partition_ids"),
+    "delay": ("delay_received_at", "task_delay"),
+    "dock": ("dock_x", "dock_y", "dock_theta", "dock_at", "dock_samples"),
+}
+
+# What a task entry leaves on the record: the task and progress groups' fields.
+_TASK_EVIDENCE = (*_GROUP_FIELDS["task"], *_GROUP_FIELDS["progress"])
+
+# The restored group each entry type replaces (a task entry: see note_location_entry).
+_ENTRY_GROUPS = {1: ("pose",), 3: ("target",), 4: ("delay",)}
+
+
+def _group_signature(group: str, location: DeviceLocation) -> tuple[Any, ...]:
+    fields = tuple(getattr(location, name) for name in _GROUP_FIELDS[group])
+    if group == "progress":
+        # An entry that carries currentMowProgress, an explicit null included,
+        # changes the reading, its time or its source.
+        fields += (location.progress_source,)
+    return fields
+
+
+def _has_task_fields(location: DeviceLocation) -> bool:
+    """Whether a task entry has been applied to the record (or restored)."""
+    return location.marks.get(2) is not None or any(
+        getattr(location, name) is not None for name in _TASK_EVIDENCE
+    )
+
+
+class NavimowCoordinator(DataUpdateCoordinator[None]):
+    """Coordinator for one mower's data, fed by the client."""
 
     def __init__(
         self,
         hass: HomeAssistant,
-        sdk: NavimowSDK,
-        api: MowerAPI,
+        client: NavimowClient,
         device: Device,
-        oauth_session: config_entry_oauth2_flow.OAuth2Session | None = None,
         config_entry: ConfigEntry | None = None,
     ) -> None:
         super().__init__(
@@ -56,20 +96,26 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER,
             config_entry=config_entry,
             name=DOMAIN,
-            update_interval=timedelta(seconds=UPDATE_INTERVAL),
+            update_interval=None,
         )
-        self.sdk = sdk
-        self.api = api
+        self.client = client
         self.device = device
-        self.oauth_session = oauth_session
-        self.data: dict[str, Any] = {}
-        self._last_state: DeviceStateMessage | None = None
+        # The latest state, and the last MQTT one for the data_source sensor.
+        self._state: MowerState | None = None
+        self._mqtt_state: MowerState | None = None
+        # The latest REST reply, every poll (polls.py), shown or not: the
+        # rest_status sensor writes a row per poll. Its details, computed once.
+        self._rest_status: DeviceStatus | None = None
+        self._rest_polled_at: str | None = None
+        self._rest_details: tuple[str | None, dict[str, Any] | None] = (None, None)
         self._last_attributes: DeviceAttributesMessage | None = None
-        # The SDK's merged location record, as of the last entry applied.
+        # The location record as of the last state or entry, or as restored.
         self._last_location: DeviceLocation | None = None
-        # The location sensors' restored fields (DeviceLocation names), and
-        # the groups that are still restored rather than live.
+        # The location sensors' restored fields (DeviceLocation names), the
+        # record assembled from them, and the groups still restored rather
+        # than live.
         self._restored_fields: dict[str, Any] = {}
+        self._restored_location: DeviceLocation | None = None
         self._restored_groups: set[str] = set()
         # Whether a task entry was applied or a task group restored: the
         # record's task fields may all be None after a real task report.
@@ -80,333 +126,150 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # two minutes, so shown as an attribute it would write a recorder row
         # on every repeat.
         self._delay_since: datetime | None = None
-        self._dock: dict[str, Any] | None = None  # learned {"x","y","n"}
-        self._last_mqtt_update: float | None = None
-        self._last_http_fetch: float | None = None
-        # Source of _last_state: "mqtt_push", "mqtt_cache" or "http_fallback".
-        self._last_data_source: str | None = None
-        # The two sources, kept apart. _mqtt_state is the last MQTT message
-        # adopted (by identity, so a poll that finds the same object in the
-        # SDK cache does not adopt it again); _rest_status is the raw REST
-        # result including the fields the SDK keeps in DeviceStatus.extra.
-        self._mqtt_state: DeviceStateMessage | None = None
-        self._mqtt_received_at: str | None = None
-        self._mqtt_received_monotonic: float | None = None
-        self._rest_status: DeviceStatus | None = None
-        self._rest_raw: dict[str, Any] | None = None  # the reply as sent
-        self._rest_polled_at: str | None = None
-        # The entry's steady REST poll and connection health (rest_poll.py,
-        # health.py), set by async_setup_entry.
-        self.rest_poller: Any = None
-        self.health: Any = None
-        # The entry's MQTT session (session.py), set by async_setup_entry:
-        # every token check pushes the bearer to it.
-        self.mqtt_session: Any = None
         # Input received but not applied (rejected.py): a running count since
         # start-up and the latest item.
         self._rejected_count = 0
         self._last_rejected: dict[str, Any] | None = None
 
-    async def async_setup(self) -> None:
-        """Register callbacks from SDK."""
-        self.sdk.on_state(self._handle_state)
-        self.sdk.on_event(self._handle_event)
-        self.sdk.on_attributes(self._handle_attributes)
+    @callback
+    def async_register(self) -> None:
+        """Register with the client, before it connects, so nothing is missed."""
+        device_id = self.device.id
+        self.client.on_state(self.ingest_state, device_id=device_id)
+        self.client.on_event(self._handle_event, device_id=device_id)
+        self.client.on_attributes(self._handle_attributes, device_id=device_id)
+        self.client.on_rejected(self._handle_rejected, device_id=device_id)
 
-    def _build_data(self) -> dict[str, Any]:
-        return {
-            "device": self.device,
-            "state": self._last_state,
-            "attributes": self._last_attributes,
-            "location": self._last_location,
-            "meta": {
-                "last_data_source": self._last_data_source,
-                "last_mqtt_update_monotonic": self._last_mqtt_update,
-                "last_http_fetch_monotonic": self._last_http_fetch,
-            },
-        }
+    async def _async_update_data(self) -> None:
+        # Push-fed: nothing asks for a refresh, and one would change nothing.
+        return None
 
-    async def _async_ensure_valid_token(self) -> str | None:
-        if not self.oauth_session:
-            return None
-        try:
-            token: dict[str, Any] | None
-            if hasattr(self.oauth_session, "async_ensure_token_valid"):
-                await self.oauth_session.async_ensure_token_valid()
-                token = self.oauth_session.token
-            elif hasattr(self.oauth_session, "async_get_valid_token"):
-                token = await self.oauth_session.async_get_valid_token()
-            else:
-                token = self.oauth_session.token
-        except ConfigEntryAuthFailed:
-            # 确定性认证失败（refresh_token 缺失或被服务端拒绝）→ 直接上报，让 HA 引导用户重新认证
-            raise
-        except Exception as err:
-            # 瞬态错误（网络超时、DNS 等）→ 不立即触发重新认证流程。
-            # 尝试沿用缓存中的 access_token；若缓存也不可用才升级为认证失败。
-            _LOGGER.warning(
-                "Token refresh failed (likely transient), falling back to cached token: %s", err
-            )
-            cached = getattr(self.oauth_session, "token", None)
-            if cached and cached.get("access_token"):
-                token = cached
-            else:
-                raise ConfigEntryAuthFailed(
-                    f"Token refresh failed and no cached token available: {err}"
-                ) from err
-        if not token or not token.get("access_token"):
-            raise ConfigEntryAuthFailed("No access token after refresh")
-        access_token = token["access_token"]
-        self.api.set_token(access_token)
-        if self.health is not None:
-            self.health.note_token(token.get("expires_at"))
-        if self.mqtt_session is not None:
-            # The WebSocket upgrade carries the bearer: the client's next
-            # connect must use the current token.
-            await self.mqtt_session.async_push_bearer(access_token)
-        return access_token
+    @callback
+    def _publish(self) -> None:
+        """Tell the entities; they read the getters below."""
+        self.async_update_listeners()
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        # 每次 update 都主动刷新 token，确保 api._token 与 oauth_session 保持同步。
-        # 若仅在 HTTP fallback 时刷新，MQTT 正常推数据期间 token 长期不更新，
-        # 过期后用户下发指令会立即收到 CODE_OAUTH_INFO_ILLEGAL。
-        try:
-            await self._async_ensure_valid_token()
-        except ConfigEntryAuthFailed:
-            raise
+    # ---- what the client delivers -----------------------------------------
 
-        cached_state = self.sdk.get_cached_state(self.device.id)
-        if (
-            cached_state is not None
-            and cached_state is not self._mqtt_state
-        ):
-            # A message the callback did not deliver (it arrived before the
-            # callback was registered). Adopt it once; later polls that find
-            # the same object leave the state and its source label alone. The
-            # SDK's late-state filter keeps a late message out of its cache.
-            self._adopt_mqtt_state(cached_state, "mqtt_cache")
+    @callback
+    def ingest_state(self, state: MowerState) -> None:
+        """A new state of this mower (client.on_state), on the event loop."""
+        self._state = state
+        if state.source is StateSource.MQTT:
+            self._mqtt_state = state
+        if state.location is not None:
+            self.apply_location(state.location)
+        self._publish()
 
-        cached_attrs = self.sdk.get_cached_attributes(self.device.id)
-        if cached_attrs is not None:
-            self._last_attributes = cached_attrs
+    @callback
+    def apply_location(self, location: DeviceLocation) -> None:
+        """A new location record: end the restore of each group it replaces,
+        and keep the time the delay flag was first reported with its value."""
+        previous = self._last_location
+        if location is previous:
+            return  # the record the last entry carried, passed again with a state
+        if self._restored_groups:
+            for group in list(self._restored_groups):
+                if _group_signature(group, location) != _group_signature(
+                    group, self._restored_location
+                ):
+                    self._restored_groups.discard(group)
+        # A repeat of the current flag keeps the time it was first seen, a
+        # restored one included.
+        if previous is None or self._delay_since is None or previous.task_delay != location.task_delay:
+            self._delay_since = location.delay_received_at
+        if not self._has_task and _has_task_fields(location):
+            self._has_task = True
+        self._last_location = location
 
-        now = time.monotonic()
-        is_mqtt_stale = (
-            self._last_mqtt_update is None
-            or now - self._last_mqtt_update > MQTT_STALE_SECONDS
-        )
-        can_http_fetch = (
-            self._last_http_fetch is None
-            or now - self._last_http_fetch > HTTP_FALLBACK_MIN_INTERVAL
-        )
-        if is_mqtt_stale and can_http_fetch:
-            try:
-                status = await self.api.async_get_device_status(self.device.id)
-                self._rest_status = status
-                self._rest_polled_at = dt_util.utcnow().isoformat()
-                self._last_state = DeviceStateMessage.from_status(status)
-                self._last_http_fetch = now
-                self._last_data_source = "http_fallback"
-            except ConfigEntryAuthFailed:
-                raise
-            except Exception as err:
-                _LOGGER.warning(
-                    "HTTP fallback failed for device %s: %s", self.device.id, err
-                )
+    @callback
+    def note_location_entry(self, message: DeviceLocationMessage) -> None:
+        """One applied entry of a location message (the SDK facade's
+        on_location), delivered after the state the client built from it.
 
-        _LOGGER.debug(
-            "Coordinator update: device=%s source=%s mqtt_ts=%s http_ts=%s",
-            self.device.id,
-            self._last_data_source,
-            self._last_mqtt_update,
-            self._last_http_fetch,
-        )
-        self.data = self._build_data()
-        return self.data
-
-    def apply_rest_status(self, raw: dict[str, Any], polled_at: str) -> None:
-        """Adopt one reply of the steady REST poll (rest_poll.py).
-
-        The reply is always kept as the latest REST observation. It becomes
-        the displayed state only while MQTT is stale, the same rule as the
-        fallback fetch in _async_update_data, which it also satisfies.
+        Two things the state cannot tell. The entry's type ends the restore
+        of its group even when the entry repeats the restored values without
+        a time, where the record alone looks unchanged. And while the client
+        has no status half yet (the connect's poll failed and no state
+        message has come) it builds no state, so the entry's record is applied
+        here and the location sensors do not wait for the first status.
         """
-        status = DeviceStatus.from_dict(dict(raw))
+        changed = False
+        if message.location is not self._last_location:
+            # Not the record the last state carried: the client built none.
+            self.apply_location(message.location)
+            changed = True
+        if message.entry_type == 2:
+            # A task entry replaces the progress reading only when it carried
+            # currentMowProgress (an explicit null counts).
+            groups: tuple[str, ...] = ("task", "progress") if "currentMowProgress" in (
+                message.raw or {}
+            ) else ("task",)
+            if not self._has_task:
+                self._has_task = True
+                changed = True
+        else:
+            groups = _ENTRY_GROUPS.get(message.entry_type, ())
+        for group in groups:
+            if group in self._restored_groups:
+                self._restored_groups.discard(group)
+                changed = True
+        if changed:
+            self._publish()
+
+    @callback
+    def note_rest_status(self, status: DeviceStatus, polled_at: datetime) -> None:
+        """One reply of the client's status poll (polls.py), shown or not.
+
+        The rest_status sensor's state and attributes are computed here, once
+        per poll, not on every read: the raw vehicleState, and the fields
+        outside the SDK's REST_STATUS_KNOWN_FIELDS kept under
+        ``unknown_fields`` so a field the cloud starts sending is visible.
+        """
         self._rest_status = status
-        self._rest_raw = dict(raw)
-        self._rest_polled_at = polled_at
-        now = time.monotonic()
-        self._last_http_fetch = now
-        if self._last_mqtt_update is None or now - self._last_mqtt_update > MQTT_STALE_SECONDS:
-            self._last_state = DeviceStateMessage.from_status(status)
-            self._last_data_source = "http_fallback"
-        self.async_set_updated_data(self._build_data())
-
-    def get_watch_view(self, now: float) -> dict[str, Any]:
-        """What the MQTT watchdog (watchdog.py) compares, at monotonic ``now``:
-        the last MQTT state report and its age, and REST's latest state."""
-        mqtt, rest = self._mqtt_state, self._rest_status
-        received = self._mqtt_received_monotonic
-        shown = self._last_state
-        return {
-            "name": self.device.name,
-            "shown_state": shown.state if shown else None,
-            # Has this mower ever reported a position (restored ones count):
-            # one whose location channel is silent altogether is not watched.
-            "has_pose": self._last_location is not None and self._last_location.pose_at is not None,
-            "mqtt_state": mqtt.state if mqtt else None,
-            "mqtt_key": self._mqtt_received_at,  # identifies the report
-            "mqtt_age": None if received is None else now - received,
-            "rest_state": rest.status.value if rest else None,
-        }
-
-    def get_rest_details(self) -> tuple[str | None, dict[str, Any] | None]:
-        """The latest REST reply as sent: its raw vehicleState, and the rest.
-
-        Fields outside the SDK's REST_STATUS_KNOWN_FIELDS are kept under ``unknown_fields`` so
-        a field the cloud starts sending is visible in history.
-        """
-        raw = self._rest_raw
-        if raw is None:
-            return None, None
-        status = self._rest_status
-        unknown = {k: v for k, v in raw.items() if k not in REST_STATUS_KNOWN_FIELDS}
-        vehicle_state = raw.get("vehicleState")
-        return (
+        self._rest_polled_at = polled_at.isoformat()
+        extra = status.extra or {}
+        unknown = {k: v for k, v in extra.items() if k not in REST_STATUS_KNOWN_FIELDS}
+        vehicle_state = extra.get("vehicleState")
+        self._rest_details = (
             vehicle_state if isinstance(vehicle_state, str) else None,
             {
-                "battery": status.battery if status else None,
-                "battery_level": raw.get("descriptiveCapacityRemaining"),
+                "battery": status.battery,
+                "battery_level": extra.get("descriptiveCapacityRemaining"),
                 "polled_at": self._rest_polled_at,
                 "unknown_fields": unknown or None,
             },
         )
+        self._publish()
 
-    def _handle_state(self, state: DeviceStateMessage) -> None:
-        if state.device_id != self.device.id:
-            return
-        _LOGGER.debug(
-            "MQTT state received: device=%s state=%s battery=%s",
-            state.device_id,
-            state.state,
-            state.battery,
-        )
-        self._last_mqtt_update = time.monotonic()
-        self.hass.loop.call_soon_threadsafe(self._update_from_state, state)
-
+    @callback
     def _handle_event(self, event: DeviceEventMessage) -> None:
-        if event.device_id != self.device.id:
-            return
         # Nothing here uses the event channel: kept whole as rejected input,
         # so its content can be studied once a mower sends any.
-        self.hass.loop.call_soon_threadsafe(
-            self.record_rejected, "event", None, "unknown_channel", event.raw
-        )
+        self.record_rejected("event", None, "unknown_channel", event.raw)
 
+    @callback
     def _handle_attributes(self, attrs: DeviceAttributesMessage) -> None:
-        if attrs.device_id != self.device.id:
-            return
-        _LOGGER.debug(
-            "MQTT attributes received: device=%s keys=%d",
-            attrs.device_id,
-            len(getattr(attrs, "__dict__", {}) or {}),
-        )
-        self._last_mqtt_update = time.monotonic()
+        _LOGGER.debug("MQTT attributes received: device=%s", attrs.device_id)
         # Attributes surface only as an opaque attribute of the lawn mower;
         # kept whole as rejected input as well.
-        self.hass.loop.call_soon_threadsafe(
-            self.record_rejected, "attributes", None, "unknown_channel", attrs.raw
-        )
-        self.hass.loop.call_soon_threadsafe(self._update_from_attributes, attrs)
-
-    def _update_from_state(
-        self, state: DeviceStateMessage, received_at: str | None = None
-    ) -> None:
-        """Apply a state message the SDK delivered; its late-state filter has
-        already kept out a late or implausibly stamped one."""
-        self._adopt_mqtt_state(state, "mqtt_push", received_at)
-        self.async_set_updated_data(self._build_data())
-
-    def _adopt_mqtt_state(
-        self, state: DeviceStateMessage, source: str, received_at: str | None = None
-    ) -> None:
-        """Make an MQTT state message the current device state.
-
-        ``received_at`` overrides the receipt time; otherwise it is the one
-        the SDK stamped on the message, and for a message built by hand (no
-        stamp) the time it is adopted.
-        """
-        self._mqtt_state = state
-        if received_at is None and state.received_at is not None:
-            received_at = state.received_at.isoformat()
-        self._mqtt_received_at = received_at or dt_util.utcnow().isoformat()
-        self._mqtt_received_monotonic = time.monotonic()
-        self._last_state = state
-        self._last_data_source = source
-
-    def get_data_source(self) -> str:
-        """Source of the current device state: mqtt_push, mqtt_cache, http_fallback or none."""
-        return self._last_data_source or "none"
-
-    def get_source_details(self) -> dict[str, Any]:
-        """The last MQTT state message and the last REST poll, side by side.
-
-        Device timestamps (``mqtt_timestamp``, ``rest_timestamp``) are what
-        the source supplied and stay None when it supplied nothing; HA's
-        own clock is only ever in ``mqtt_received_at`` / ``rest_polled_at``.
-        """
-        mqtt = self._mqtt_state
-        rest = self._rest_status
-        extra = (rest.extra if rest else None) or {}
-        return {
-            "mqtt_state": mqtt.state if mqtt else None,
-            "mqtt_raw_state": (mqtt.metrics or {}).get("raw_state") if mqtt else None,
-            "mqtt_battery": mqtt.battery if mqtt else None,
-            "mqtt_timestamp": mqtt.timestamp if mqtt else None,
-            "mqtt_received_at": self._mqtt_received_at,
-            "rest_status": rest.status.value if rest else None,
-            "rest_vehicle_state": extra.get("vehicleState"),
-            "rest_battery": rest.battery if rest else None,
-            "rest_battery_level": extra.get("descriptiveCapacityRemaining"),
-            "rest_timestamp": rest.timestamp if rest else None,
-            "rest_polled_at": self._rest_polled_at,
-        }
-
-    def _update_from_attributes(self, attrs: DeviceAttributesMessage) -> None:
+        self.record_rejected("attributes", None, "unknown_channel", attrs.raw)
         self._last_attributes = attrs
-        self.async_set_updated_data(self._build_data())
+        self._publish()
 
-    def ingest_location(self, message: DeviceLocationMessage) -> None:
-        """One applied entry of a location message, with the record after it."""
-        if message.device_id != self.device.id:
-            return
-        # The restored group this entry type replaces is live from now on.
-        # A task entry replaces the progress reading only when it carried
-        # currentMowProgress (an explicit null counts).
-        if message.entry_type == 1:
-            self._restored_groups.discard("pose")
-        elif message.entry_type == 2:
-            self._has_task = True
-            self._restored_groups.discard("task")
-            if "currentMowProgress" in message.raw:
-                self._restored_groups.discard("progress")
-        elif message.entry_type == 3:
-            self._restored_groups.discard("target")
-        elif message.entry_type == 4:
-            self._restored_groups.discard("delay")
-            # A repeat of the current flag keeps the time it was first seen,
-            # a restored one included.
-            previous = self._last_location
-            if (
-                previous is None
-                or self._delay_since is None
-                or previous.task_delay != message.location.task_delay
-            ):
-                self._delay_since = message.location.delay_received_at
-        self._last_location = message.location
-        self._maybe_learn_dock(message.location)
-        self.async_set_updated_data(self._build_data())
+    @callback
+    def _handle_rejected(self, message: RejectedMessage) -> None:
+        # Any channel: a late, implausibly stamped or unparsable state
+        # message, a state field nobody knows, a malformed event or
+        # attributes payload, a location entry the decoder refused. Recorded
+        # with the bytes as the mower sent them, once per message.
+        payload = message.original if message.original is not None else message.payload
+        self.record_rejected(
+            message.channel, message.topic, message.reason,
+            payload.decode("utf-8", "replace"), list(message.reasons),
+        )
 
+    @callback
     def record_rejected(
         self,
         channel: str,
@@ -417,26 +280,25 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         """Record input that was received but not applied (see rejected.py).
 
-        Must run on the event loop. Each call is one state update of the
-        rejected_input sensor, so the recorder keeps every item.
+        Each call is one state update of the rejected_input sensor, so the
+        recorder keeps every item.
         """
         self._last_rejected = rejection_record(
             channel, topic, reason, payload, dt_util.utcnow().isoformat(), reasons
         )
         self._rejected_count += 1
-        self.async_set_updated_data(self._build_data())
+        self._publish()
 
-    def get_rejected(self) -> tuple[int, dict[str, Any] | None]:
-        """Count of rejected items since start-up, and the latest one."""
-        return self._rejected_count, self._last_rejected
+    # ---- the restore after a restart -----------------------------------------
 
+    @callback
     def restore_location(self, group: str, fields: dict[str, Any]) -> None:
         """Collect a location sensor's restored fields (DeviceLocation names).
 
         The entities show the record assembled so far at once; the whole of
-        it goes to the SDK in async_finish_restore(). A group stays restored
-        until a live entry of the type that replaces it is applied. Live data
-        wins: nothing is restored once a live record exists.
+        it goes to the client in async_finish_restore(). A group stays
+        restored until a live record differs from it in the group's fields.
+        Live data wins: nothing is restored once a live record exists.
         """
         if not fields or (self._last_location is not None and not self._restored_groups):
             return
@@ -447,20 +309,22 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_location = DeviceLocation.from_dict(
             {**self._restored_fields, "device_id": self.device.id}
         )
+        self._restored_location = self._last_location
         if group == "delay":
             # The zone sensor recorded the time its flag was first seen.
             self._delay_since = self._last_location.delay_received_at
-        self.async_set_updated_data(self._build_data())
+        self._publish()
 
+    @callback
     def async_finish_restore(self) -> None:
-        """Hand the restored record to the SDK, before the client connects.
+        """Hand the restored record to the client, before it connects.
 
-        Its observation times become the SDK's high-water marks, so a late
-        entry older than what was shown before the restart is rejected as
-        stale.
+        The client queues it and installs it when it builds the SDK's
+        decoder, whose high-water marks it seeds, so a late entry older than
+        what was shown before the restart is rejected as stale.
         """
         if self._restored_groups and self._last_location is not None:
-            self.sdk.restore_location(self.device.id, self._last_location)
+            self.client.restore_location(self.device.id, self._last_location)
 
     def has_task_report(self) -> bool:
         """Whether a task entry was applied, or a task group restored."""
@@ -474,27 +338,52 @@ class NavimowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Whether a location group still shows its restored value."""
         return group in self._restored_groups
 
-    def _maybe_learn_dock(self, location: DeviceLocation) -> None:
-        """Average pose samples into the dock estimate while docked/charging."""
-        if "pose" in self._restored_groups:
-            return  # a restored pose is not a fresh sample
-        state = self._last_state
-        status = (state.state or "").lower() if state else ""
-        if status in DOCKED_STATES and location.x is not None and location.y is not None:
-            self._dock = update_dock_estimate(self._dock, location.x, location.y)
+    # ---- what the entities read ----------------------------------------------
 
-    def get_dock_position(self) -> dict | None:
-        """Learned dock position {"x","y","n"}, or None if never seen docked."""
-        return self._dock
+    def get_device_state(self) -> MowerState | None:
+        return self._state
 
     def get_device_location(self) -> DeviceLocation | None:
-        return self.data.get("location")
-
-    def get_device_state(self) -> DeviceStateMessage | None:
-        return self.data.get("state")
+        return self._last_location
 
     def get_device_attributes(self) -> DeviceAttributesMessage | None:
-        return self.data.get("attributes")
+        return self._last_attributes
 
-    def get_device_info(self) -> Any | None:
-        return self.data.get("device")
+    def get_data_source(self) -> str:
+        """Source of the shown state: mqtt_push, http_fallback or none."""
+        if self._state is None:
+            return "none"
+        return DATA_SOURCE_LABELS.get(self._state.source, self._state.source.value)
+
+    def get_source_details(self) -> dict[str, Any]:
+        """The last MQTT state message and the last REST poll, side by side.
+
+        Device timestamps (``mqtt_timestamp``, ``rest_timestamp``) are what
+        the source supplied and stay None when it supplied nothing; HA's
+        own clock is only ever in ``mqtt_received_at`` / ``rest_polled_at``.
+        """
+        mqtt = self._mqtt_state
+        message = mqtt.message if mqtt is not None else None
+        rest = self._rest_status
+        extra = (rest.extra if rest else None) or {}
+        return {
+            "mqtt_state": message.state if message else None,
+            "mqtt_raw_state": (message.metrics or {}).get("raw_state") if message else None,
+            "mqtt_battery": message.battery if message else None,
+            "mqtt_timestamp": message.timestamp if message else None,
+            "mqtt_received_at": mqtt.received_at.isoformat() if mqtt else None,
+            "rest_status": rest.status.value if rest else None,
+            "rest_vehicle_state": extra.get("vehicleState"),
+            "rest_battery": rest.battery if rest else None,
+            "rest_battery_level": extra.get("descriptiveCapacityRemaining"),
+            "rest_timestamp": rest.timestamp if rest else None,
+            "rest_polled_at": self._rest_polled_at,
+        }
+
+    def get_rest_details(self) -> tuple[str | None, dict[str, Any] | None]:
+        """The latest REST reply: its raw vehicleState, and the rest."""
+        return self._rest_details
+
+    def get_rejected(self) -> tuple[int, dict[str, Any] | None]:
+        """Count of rejected items since start-up, and the latest one."""
+        return self._rejected_count, self._last_rejected

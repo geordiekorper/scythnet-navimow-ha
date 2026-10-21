@@ -42,6 +42,12 @@
       }
     }
   },
+  "issues": {
+    "recorder_retention": {
+      "title": "保留更多割草机历史",
+      "description": "记录器保留 {days} 天历史（configuration.yaml 中的 recorder: purge_keep_days）。此集成的实体就是割草机的完整记录：每个位置、每条任务读数、每条状态报告和每次状态查询。若希望记录能跨过短暂外出，请保留 {suggested} 天或更久；从 Home Assistant 读取割草机历史的应用最多只能回溯到记录器保留的范围。若 {days} 天已足够，可忽略此提示。"
+    }
+  },
   "entity": {
     "sensor": {
       "battery": {
