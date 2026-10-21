@@ -292,3 +292,27 @@ fixes it carries, and is flagged as a pre-release on GitHub, so HACS shows it
 only with **Show beta versions** on. The suffix is dropped when a release is
 considered stable. Hand-written notes for each release sit below the generated
 entry in the changelog.
+
+### Testing against an SDK release
+
+`scripts/test-against-sdk.sh` runs the test suite against one
+`navimow-sdk-community` release in a private environment that matches
+pi-main's: Python 3.14, Home Assistant 2026.9.2, with `aiohttp` and
+`paho-mqtt` pinned as the container pins them. The SDK's Publish workflow
+runs it on every tag, and it runs on a laptop with `uv`, `git` and network
+access; no Docker.
+
+```bash
+scripts/test-against-sdk.sh            # the newest release on TestPyPI
+scripts/test-against-sdk.sh 0.2.0a7    # one release, from TestPyPI alone
+scripts/test-against-sdk.sh --wheel dist/navimow_sdk_community-0.2.0a7-py3-none-any.whl
+scripts/test-against-sdk.sh 0.2.0a7 -- -W error::DeprecationWarning   # extra pytest arguments
+```
+
+The script tests a clean archive of `HEAD` of the checkout it is run in, not
+the one it lives in, so an older commit can be tested with a newer script:
+`git worktree add /tmp/navimow-<sha> <sha>`, then run the script by its
+absolute path from inside that worktree. It prints the tested commit, its own
+path and commit, and the installed version pair; the exit status is pytest's.
+A version mismatch between the distribution and `mower_sdk.__version__`, or a
+dependency conflict found by `pip check`, fails before any test runs.
