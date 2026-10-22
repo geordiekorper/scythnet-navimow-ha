@@ -26,36 +26,60 @@ def lookup(version):
     return version_of
 
 
-def module(version, path=SITE_INIT):
-    return SimpleNamespace(__version__=version, __file__=path)
+class Facade:
+    """The community facade's surface the check probes."""
+
+    def restore_location(self, device_id, location):
+        pass
+
+
+def module(version, path=SITE_INIT, community=True):
+    facade = Facade if community else type("NavimowSDK", (), {})
+    return SimpleNamespace(__version__=version, __file__=path, NavimowSDK=facade)
 
 
 class CheckTest(unittest.TestCase):
     def test_the_installed_distribution_passes(self):
-        self.assertIsNone(sdk_check.check(lookup("0.2.0a3"), lambda: SITE_INIT, module("0.2.0a3")))
+        self.assertIsNone(sdk_check.check(lookup("0.2.0a6"), lambda: SITE_INIT, module("0.2.0a6")))
 
     def test_this_environment_passes(self):
         self.assertIsNone(sdk_check.PROBLEM)
         self.assertIsNone(sdk_check.check())
 
+    def test_a_checkout_bumped_since_its_editable_install_passes(self):
+        """The version recorded at the install lags the module's after a bump;
+        the code is the community edition's and newer, so it runs."""
+        self.assertIsNone(sdk_check.check(
+            lookup("0.2.0a6"), lambda: SITE_INIT, module("0.2.0a7", "/src/navimow-sdk/mower_sdk/__init__.py")
+        ))
+
     def test_upstream_files_over_the_distribution_say_uninstall_both(self):
-        problem = sdk_check.check(lookup("0.2.0a3"), lambda: SITE_INIT, module("0.1.0"))
-        self.assertIn("navimow-sdk-community 0.2.0a3 is installed", problem)
+        problem = sdk_check.check(lookup("0.2.0a6"), lambda: SITE_INIT, module("0.1.0", community=False))
+        self.assertIn("navimow-sdk-community 0.2.0a6 is installed", problem)
         self.assertIn(f"the mower_sdk package imported is version 0.1.0 from {SITE_INIT}", problem)
         self.assertIn("Uninstall navimow-sdk and navimow-sdk-community", problem)
 
-    def test_a_copy_elsewhere_on_the_path_is_named_for_removal(self):
+    def test_upstream_files_with_a_higher_version_are_refused_too(self):
+        """A version compare alone would let upstream 1.0 pass over community 0.2."""
+        problem = sdk_check.check(lookup("0.2.0a6"), lambda: SITE_INIT, module("1.0.0", community=False))
+        self.assertIn("Uninstall navimow-sdk and navimow-sdk-community", problem)
+
+    def test_an_older_copy_elsewhere_on_the_path_is_named_for_removal(self):
         problem = sdk_check.check(
-            lookup("0.2.0a3"), lambda: SITE_INIT, module("0.2.0a2", "/config/deps/mower_sdk/__init__.py")
+            lookup("0.2.0a6"), lambda: SITE_INIT, module("0.2.0a2", "/config/deps/mower_sdk/__init__.py")
         )
         self.assertIn("version 0.2.0a2 from /config/deps/mower_sdk/__init__.py", problem)
         self.assertIn("Remove or correct the copy in /config/deps/mower_sdk first", problem)
         self.assertNotIn("Uninstall", problem)
 
     def test_a_missing_distribution_is_a_problem(self):
-        problem = sdk_check.check(lookup(None), lambda: None, module("0.1.0"))
+        problem = sdk_check.check(lookup(None), lambda: None, module("0.1.0", community=False))
         self.assertTrue(problem.startswith("navimow-sdk-community is not installed, but"))
         self.assertIn("Remove or correct the copy", problem)
+
+    def test_a_module_without_a_version_is_a_problem(self):
+        problem = sdk_check.check(lookup("0.2.0a6"), lambda: SITE_INIT, module(None))
+        self.assertIn("imported is version None", problem)
 
 
 class SetupRefusesTest(unittest.IsolatedAsyncioTestCase):

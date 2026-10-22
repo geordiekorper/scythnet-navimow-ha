@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -258,12 +259,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         client.on_connection(health.note_connection)
         client.on_error(error_handler(hass, entry, health))
 
-        @callback
-        def _on_rebuild_request(request: Any) -> None:
-            _LOGGER.warning("MQTT watchdog: %s", request.reason)
-
-        client.on_rebuild_request(_on_rebuild_request)
-
         for device in devices:
             coordinator = NavimowCoordinator(
                 hass=hass, client=client, device=device, config_entry=entry
@@ -324,8 +319,12 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
     client when the connect completed, whether before or after the
     cancellation arrived, and only then unwinds. A setup cancelled a second
     time stops waiting; the connect then undoes itself when it completes.
+    The unwind itself, once started, finishes however often the setup is
+    cancelled meanwhile, Home Assistant stopping included: it is short (a
+    disconnect, the platform unload), and nothing else may act on the entry
+    until the setup ends, so an unwind left to run on its own could meet
+    the next setup of the same entry.
     """
-    loop = asyncio.get_running_loop()
     connect = asyncio.ensure_future(client.async_connect())
     try:
         await asyncio.shield(connect)
@@ -336,22 +335,29 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
             except BaseException:  # noqa: BLE001 - its failure, or a second cancellation
                 pass
         if connect.done():
-            if not connect.cancelled() and connect.exception() is None:
-                # Completed, before or after the cancellation: stop what it started.
-                await asyncio.shield(client.async_disconnect())
+            # Completed, before or after the cancellation: stop what it started.
+            disconnect = not connect.cancelled() and connect.exception() is None
         else:
             # Cancelled twice: nobody waits any longer, so the connect takes
             # down what it completes, if it completes.
-            def _undo_when_done(done: asyncio.Future) -> None:
-                if not done.cancelled() and done.exception() is None:
-                    loop.create_task(client.async_disconnect())
-
-            connect.add_done_callback(_undo_when_done)
+            disconnect = False
+            connect.add_done_callback(partial(_disconnect_when_done, hass, client))
             _LOGGER.warning(
                 "Navimow setup cancelled twice; the connect still under way disconnects itself"
             )
-        await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        # The unwind as a future of its own, held here and waited for: a
+        # cancellation of this task lands on the shield, not on the unwind.
+        undo = asyncio.ensure_future(_async_undo_setup(hass, entry, client, disconnect=disconnect))
+        interrupted = False
+        while not undo.done():
+            try:
+                await asyncio.shield(undo)
+            except asyncio.CancelledError:
+                if not interrupted and not undo.done():
+                    interrupted = True
+                    _LOGGER.warning("Navimow setup cancelled while being undone; the undo finishes first")
+        if not undo.cancelled() and (failure := undo.exception()) is not None:
+            raise failure
         if isinstance(err, MowerAuthRequiredError):
             raise ConfigEntryAuthFailed(f"Authentication failed: {err}") from err
         if isinstance(err, (ConfigEntryAuthFailed, ConfigEntryNotReady)) or not isinstance(
@@ -359,6 +365,38 @@ async def _async_connect_or_undo(hass: HomeAssistant, entry: ConfigEntry, client
         ):
             raise  # as it is: a refusal, or a cancellation
         raise ConfigEntryNotReady(f"Failed to connect to the Navimow cloud: {err}") from err
+
+
+async def _async_undo_setup(
+    hass: HomeAssistant, entry: ConfigEntry, client: Any, *, disconnect: bool
+) -> None:
+    """Unwind a setup whose connect did not complete: the client disconnected
+    when the connect had completed, then the platforms unloaded and the
+    entry's data dropped, if still this setup's (its client is the one
+    stored there)."""
+    if disconnect:
+        await _async_disconnect_quietly(client, "a setup that did not complete")
+    await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    data = hass.data.get(DOMAIN, {})
+    if (data.get(entry.entry_id) or {}).get("client") is client:
+        data.pop(entry.entry_id)
+
+
+def _disconnect_when_done(hass: HomeAssistant, client: Any, connect: asyncio.Future) -> None:
+    """The done callback of a connect nobody waits for any longer."""
+    if connect.cancelled() or connect.exception() is not None:
+        return
+    hass.async_create_task(
+        _async_disconnect_quietly(client, "a setup cancelled twice"),
+        "navimow: disconnect after a setup cancelled twice",
+    )
+
+
+async def _async_disconnect_quietly(client: Any, after: str) -> None:
+    try:
+        await client.async_disconnect()
+    except Exception as err:  # noqa: BLE001 - logged, nothing else to do
+        _LOGGER.warning("Error disconnecting from the Navimow cloud after %s: %s", after, err)
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

@@ -6,12 +6,12 @@ client's connection, and the diagnostic entities of every mower on the entry
 show it, so the recorder keeps the connection's history beside the mower's.
 
 The SDK's MQTT client counts connects, disconnects, failed connects and
-rebuilds, keeps the reason for each, and times every message per device and
-channel; CollectorHealth reads those from it (client.mqtt, None until the
-client has connected once). What it keeps itself is what the SDK has no
-equivalent for: the connected flag as the client's connection events report
-it, wall-clock stamps of the events, the recoveries from a refused
-connection, the token expiry, the REST poll's outcome, and the listeners.
+rebuilds, keeps the reason and the time of each, and times every message per
+device and channel; CollectorHealth reads those from it (client.mqtt, None
+until the client has connected once). What it keeps itself is what the SDK
+has no equivalent for: the connected flag as the client's connection events
+report it, the recoveries from a refused connection, the rebuild's stamp, the
+token expiry, the REST poll's outcome, and the listeners.
 """
 from __future__ import annotations
 
@@ -21,6 +21,11 @@ from typing import Any
 
 from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.util import dt as dt_util
+
+
+def iso_or_none(stamp: datetime | None) -> str | None:
+    """A UTC stamp as the entities show it, or None; shared with the sensors."""
+    return None if stamp is None else stamp.isoformat()
 
 
 class CollectorHealth:
@@ -33,9 +38,6 @@ class CollectorHealth:
         # health first (its token provider stamps the token expiry here).
         self.client = client
         self.connected = False
-        self.connected_at: str | None = None
-        self.disconnected_at: str | None = None
-        self.connect_failed_at: str | None = None
         # Recoveries: a connect that followed one or more failed attempts.
         # The client fetches the broker credentials again after a refused
         # connection, which is what the next successful connect shows.
@@ -90,6 +92,21 @@ class CollectorHealth:
     @property
     def connect_fail_reason(self) -> str | None:
         return getattr(self.mqtt, "last_connect_fail_reason", None)
+
+    # The stamps of the latest connect, disconnect and failed connect: set by
+    # the client in the MQTT thread as each event happens, so they agree with
+    # the reasons shown beside them.
+    @property
+    def connected_at(self) -> str | None:
+        return iso_or_none(getattr(self.mqtt, "last_connected_at", None))
+
+    @property
+    def disconnected_at(self) -> str | None:
+        return iso_or_none(getattr(self.mqtt, "last_disconnected_at", None))
+
+    @property
+    def connect_failed_at(self) -> str | None:
+        return iso_or_none(getattr(self.mqtt, "last_connect_failed_at", None))
 
     def last_message_at(self, device_id: str) -> datetime | None:
         """When the last MQTT message for the device arrived, on any channel."""
@@ -147,7 +164,6 @@ class CollectorHealth:
     @callback
     def note_connected(self) -> None:
         self.connected = True
-        self.connected_at = dt_util.utcnow().isoformat()
         if self._failed_since_connect:
             self._failed_since_connect = False
             self.credential_refreshes += 1
@@ -156,13 +172,11 @@ class CollectorHealth:
     @callback
     def note_disconnected(self) -> None:
         self.connected = False
-        self.disconnected_at = dt_util.utcnow().isoformat()
         self._notify()
 
     @callback
     def note_connect_failed(self) -> None:
         self.connected = False
-        self.connect_failed_at = dt_util.utcnow().isoformat()
         self._failed_since_connect = True
         self._notify()
 

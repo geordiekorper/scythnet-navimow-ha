@@ -255,6 +255,22 @@ class CoordinatorTest(unittest.IsolatedAsyncioTestCase):
         self.coordinator.restore_location("task", {"current_zone": 9})
         self.assertIsNone(self.coordinator.get_device_location().current_zone)
 
+    def test_a_restore_after_the_handover_is_ignored_even_while_a_group_stays_restored(self):
+        # The task group is still restored (a docked mower sends no task entry)
+        # when a live pose arrives; a dock sensor enabled later restores its
+        # recorded value: that must not rebuild the record from the restored
+        # fields alone and lose the live pose.
+        self.coordinator.restore_location("pose", {"x": 2.0, "y": 0.3})
+        self.coordinator.restore_location("task", {"current_zone": 2})
+        self.coordinator.async_finish_restore()
+        self.feed(POSE, decoder=self.restored_decoder())
+        self.assertEqual(self.coordinator.get_device_location().x, 1.5)
+        self.assertTrue(self.coordinator.is_group_restored("task"))
+        self.coordinator.restore_location("dock", {"dock_x": 2.0, "dock_samples": 3})
+        location = self.coordinator.get_device_location()
+        self.assertEqual((location.x, location.current_zone, location.dock_x), (1.5, 2, None))
+        self.assertFalse(self.coordinator.is_group_restored("dock"))
+
     def test_a_restored_delay_time_survives_a_live_repeat(self):
         self.coordinator.restore_location(
             "delay", {"task_delay": False, "delay_received_at": RECEIVED}
@@ -355,6 +371,7 @@ class CoordinatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((latest["channel"], latest["reason"]), ("state", "stale"))
         self.assertEqual(latest["reasons"], ["stale", "unknown_field"])
         self.assertEqual(json.loads(latest["payload"]), {"state": "isRunning"})
+        self.assertEqual(latest["received_at"], RECEIVED_AT.isoformat())  # the SDK's receipt time
 
     def test_a_rejected_message_without_the_original_uses_the_payload(self):
         self.client.deliver("rejected", RejectedMessage(
@@ -373,6 +390,14 @@ class CoordinatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.coordinator.get_device_state())
         self.client.deliver("event", DeviceEventMessage.from_dict({"device_id": "dev-2", "event": "x"}))
         self.assertEqual(self.coordinator.get_rejected()[0], 1)  # another mower's
+
+    def test_a_rejected_event_or_attributes_message_keeps_the_receipt_time(self):
+        event = replace(DeviceEventMessage.from_dict({"device_id": "dev-1", "event": "x"}), received_at=RECEIVED_AT)
+        self.client.deliver("event", event)
+        self.assertEqual(self.coordinator.get_rejected()[1]["received_at"], RECEIVED_AT.isoformat())
+        attrs = DeviceAttributesMessage.from_dict({"device_id": "dev-1", "attributes": {}})
+        self.client.deliver("attributes", attrs)  # built by hand: no receipt time, stamped now
+        self.assertNotEqual(self.coordinator.get_rejected()[1]["received_at"], RECEIVED_AT.isoformat())
 
     def test_an_attributes_message_is_recorded_whole_and_applied(self):
         attrs = DeviceAttributesMessage.from_dict({"device_id": "dev-1", "attributes": {"firmware": "1.2"}})

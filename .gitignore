@@ -26,3 +26,9 @@ env/
 
 # Home Assistant
 *.log
+
+# Local handoff notes
+/docs/
+
+# Issue tracker workspace gate files
+*.gate.lock*

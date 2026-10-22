@@ -217,10 +217,12 @@ container is recreated (Home Assistant Container) or until both are uninstalled
 by hand and Home Assistant restarted (Home Assistant Core in a virtual
 environment). After the install, the files in use are the community edition's;
 the SDK logs a warning while both are listed. If the `mower_sdk` package on
-disk is not the distribution the integration requires (the upstream package
-installed again over it, or another copy earlier on the path), the integration
-refuses to start and its error names the versions found, where the package was
-loaded from, and what to remove.
+disk is not the community edition's code, or is older than the distribution
+installed (the upstream package installed again over it, or a stale copy
+earlier on the path), the integration refuses to start and its error names the
+versions found, where the package was loaded from, and what to remove. A
+checkout of the community SDK installed in editable mode runs as long as its
+version is not older than the one recorded at its install.
 
 ## Usage 🎮
 

@@ -19,7 +19,7 @@ from custom_components.navimow import (
 )
 from custom_components.navimow.const import DOMAIN
 from custom_components.navimow.health import CollectorHealth
-from tests.fakes import REST_PAYLOAD, entry_hass
+from tests.fakes import REST_PAYLOAD, entry_hass, hass_for
 
 LOGGER = "custom_components.navimow"
 
@@ -145,7 +145,7 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConfigEntryAuthFailed):
             await _async_connect_or_undo(self.hass, self.entry, self.client)
         self.undone()
-        self.hass.data[DOMAIN]["e1"] = {}
+        self.hass.data[DOMAIN]["e1"] = {"client": self.client}  # as the setup stores it
         self.hass.config_entries.async_unload_platforms.reset_mock()
         self.client.async_connect.side_effect = ConfigEntryAuthFailed("refresh refused")
         with self.assertRaises(ConfigEntryAuthFailed) as raised:
@@ -223,6 +223,84 @@ class ConnectOrUndoTest(unittest.IsolatedAsyncioTestCase):
         release.set()
         await self.settle()
         self.client.async_disconnect.assert_not_awaited()
+
+    def slow_disconnect(self):
+        """A connect that completes at once and a disconnect that waits for
+        the test's release; returns (started, disconnecting, release)."""
+        started, disconnecting, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def connect():
+            started.set()
+            await asyncio.sleep(0)
+
+        async def disconnect():
+            disconnecting.set()
+            await release.wait()
+
+        self.client.async_connect, self.client.async_disconnect = connect, disconnect
+        return started, disconnecting, release
+
+    async def test_a_cancel_that_lands_during_the_undo_waits_for_it(self):
+        # The connect completed and the undo is disconnecting when a second
+        # cancellation arrives: the setup keeps waiting, so the undo cannot
+        # outlive it and meet the entry's next setup.
+        started, disconnecting, release = self.slow_disconnect()
+        task = asyncio.create_task(_async_connect_or_undo(self.hass, self.entry, self.client))
+        await started.wait()
+        task.cancel()
+        await disconnecting.wait()
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            task.cancel()
+            await self.settle()
+        self.assertIn("finishes first", logs.output[0])
+        self.assertFalse(task.done())
+        self.hass.config_entries.async_unload_platforms.assert_not_awaited()  # still disconnecting
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.undone()
+
+    async def test_home_assistant_stopping_during_the_undo_does_not_lose_it(self):
+        # Home Assistant stops while the undo is disconnecting. It does not
+        # wait for tasks started before the stop, whatever it does to them
+        # on the way; the unwind still runs to its end once the disconnect
+        # returns.
+        hass = hass_for(self)
+        hass.data[DOMAIN] = self.hass.data[DOMAIN]
+        hass.config_entries = self.hass.config_entries
+        started, disconnecting, release = self.slow_disconnect()
+        task = hass.async_create_task(_async_connect_or_undo(hass, self.entry, self.client))
+        await started.wait()
+        task.cancel()
+        await disconnecting.wait()
+        await hass.async_stop(force=True)
+        self.hass.config_entries.async_unload_platforms.assert_not_awaited()
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.undone()
+
+    async def test_the_undo_drops_only_the_data_it_owns(self):
+        self.client.async_connect.side_effect = MowerAPIError("down")
+        self.hass.data[DOMAIN]["e1"] = {"client": object()}  # another setup's
+        with self.assertRaises(ConfigEntryNotReady):
+            await _async_connect_or_undo(self.hass, self.entry, self.client)
+        self.hass.config_entries.async_unload_platforms.assert_awaited_once()
+        self.assertIn("e1", self.hass.data[DOMAIN])
+
+    async def test_a_failed_disconnect_after_a_double_cancel_is_logged(self):
+        self.started, release = asyncio.Event(), asyncio.Event()
+
+        async def connect():
+            self.started.set()
+            await release.wait()
+
+        await self.cancel_twice(connect)
+        self.client.async_disconnect.side_effect = OSError("socket closed")
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            release.set()
+            await self.settle()
+        self.assertIn("socket closed", logs.output[-1])
 
     async def test_a_setup_cancelled_during_a_connect_that_then_fails_undoes_without_a_disconnect(self):
         started = asyncio.Event()

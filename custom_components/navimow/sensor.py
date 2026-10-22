@@ -25,7 +25,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, LAST_MESSAGE_RESOLUTION
 from .coordinator import NavimowCoordinator
 from .entity import device_info
-from .health import CollectorHealth
+from .health import CollectorHealth, iso_or_none
 from mower_sdk.location import target_zone
 
 from .location import (
@@ -34,10 +34,6 @@ from .location import (
     TASK_ATTRIBUTES,
     restore_location_groups,
 )
-
-
-def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -250,7 +246,7 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
                 "target_time_ms": loc.target_at,
                 "target_last_time_ms": loc.target_last_at,
                 "task_delay": loc.task_delay,
-                "delay_received_at": _iso(self.coordinator.get_delay_since()),
+                "delay_received_at": iso_or_none(self.coordinator.get_delay_since()),
                 "is_restored": restored("target", "delay"),
             }
         if key == "position_x":
@@ -262,7 +258,7 @@ class NavimowSensor(CoordinatorEntity[NavimowCoordinator], SensorEntity):
                 "theta_rad": loc.theta,
                 "vehicle_state": loc.vehicle_state,
                 "pose_time_ms": loc.pose_at,
-                "received_at": _iso(loc.pose_received_at),
+                "received_at": iso_or_none(loc.pose_received_at),
                 "source": POSE_SOURCE,
                 "is_restored": restored("pose"),
             }

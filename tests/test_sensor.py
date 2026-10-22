@@ -46,6 +46,7 @@ class FakeCoordinator:
         self._restored_location = None
         self._restored_fields = {}
         self._restored_groups = set()
+        self._restore_finished = False
         self._has_task = False
         self._delay_since = None
         self.state = None  # a MowerState-like object (status), or None

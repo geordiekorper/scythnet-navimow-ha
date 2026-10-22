@@ -1,4 +1,5 @@
 """Stand-ins and fixtures shared by the tests."""
+import asyncio
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ def entry_hass(client):
     hass = SimpleNamespace(
         data={DOMAIN: {"e1": {"client": client}}},
         config_entries=SimpleNamespace(async_unload_platforms=AsyncMock(return_value=True)),
+        async_create_task=lambda coro, name=None, eager_start=True: asyncio.create_task(coro, name=name),
     )
     return hass, SimpleNamespace(entry_id="e1")
 
@@ -70,6 +72,9 @@ class FakeMqtt:
         self.client_id = "web_user_1"
         self.last_disconnect_reason: str | None = None
         self.last_connect_fail_reason: str | None = None
+        self.last_connected_at: datetime | None = None
+        self.last_disconnected_at: datetime | None = None
+        self.last_connect_failed_at: datetime | None = None
         self.message_at: dict[str, datetime] = {}
 
     def last_message_at(self, device_id, channel=None):

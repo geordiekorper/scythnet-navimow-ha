@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.util import dt as dt_util
+from mower_sdk.errors import MowerAuthRequiredError, MowerTransportError
 
 if TYPE_CHECKING:
     from mower_sdk.models import MowerCommand
@@ -26,8 +27,6 @@ def refused_credentials(err: BaseException) -> bool:
     (the SDK's MowerAuthRequiredError) or by Home Assistant's own token
     refresh (ConfigEntryAuthFailed): the one failure only the integration
     can act on, by starting reauthentication."""
-    from mower_sdk.errors import MowerAuthRequiredError
-
     return isinstance(err, (MowerAuthRequiredError, ConfigEntryAuthFailed))
 
 
@@ -68,10 +67,6 @@ async def async_send_command(
     ``error``, and ``sent_at`` / ``recorded_at``. A refused command raises
     HomeAssistantError; refused credentials also start reauthentication.
     """
-    # Imported here, not at module level: services.py imports this module,
-    # and the package's start-up check must be able to run first.
-    from mower_sdk.errors import MowerAuthRequiredError, MowerTransportError
-
     sent_at = dt_util.utcnow().isoformat()
     outcome: dict[str, Any] = {
         "command": command.value, "status": "unknown", "error": None,

@@ -18,9 +18,9 @@ on the dock sensors.
   upstream `navimow-sdk` both provide the `mower_sdk` package, and Home
   Assistant never uninstalls a requirement, so both stay listed until the
   container is recreated; the SDK logs a warning meanwhile. If the files on disk
-  are not the distribution the integration requires, it refuses to start with an
-  error naming the versions found, where the package was loaded from, and what
-  to remove (see Requirements in the README).
+  are not the community edition's, or are older than the distribution installed,
+  it refuses to start with an error naming the versions found, where the package
+  was loaded from, and what to remove (see Requirements in the README).
 - **Broker credentials.** The MQTT credentials are fetched again only after a
   failed connection attempt (a refused connection, or one that failed before the
   broker answered, as a stale token at the WebSocket upgrade does), at most once
@@ -79,7 +79,7 @@ on the dock sensors.
   rules and the rebuild they ask for, the broker-credential refresh after a
   refused connection, the token push, and the merge of what MQTT pushes and
   what REST answers into one state per mower. `session.py`, `rest_poll.py`
-  and `watchdog.py` are gone (1,502 lines of the package deleted, 719
+  and `watchdog.py` are gone (1,531 lines of the package deleted, 831
   added; 49 tests whose behaviour the SDK's own suite pins). What shows:
   `data_source` never reads `mqtt_cache` any more (the client registers its
   handler before the feed connects); `credential_refreshes` on

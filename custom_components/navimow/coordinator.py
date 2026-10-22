@@ -117,6 +117,7 @@ class NavimowCoordinator(DataUpdateCoordinator[None]):
         self._restored_fields: dict[str, Any] = {}
         self._restored_location: DeviceLocation | None = None
         self._restored_groups: set[str] = set()
+        self._restore_finished = False
         # Whether a task entry was applied or a task group restored: the
         # record's task fields may all be None after a real task report.
         self._has_task = False
@@ -245,15 +246,20 @@ class NavimowCoordinator(DataUpdateCoordinator[None]):
     @callback
     def _handle_event(self, event: DeviceEventMessage) -> None:
         # Nothing here uses the event channel: kept whole as rejected input,
-        # so its content can be studied once a mower sends any.
-        self.record_rejected("event", None, "unknown_channel", event.raw)
+        # so its content can be studied once a mower sends any. The SDK's
+        # message carries no topic; its receipt time stamps the record.
+        self.record_rejected(
+            "event", None, "unknown_channel", event.raw, received_at=event.received_at
+        )
 
     @callback
     def _handle_attributes(self, attrs: DeviceAttributesMessage) -> None:
         _LOGGER.debug("MQTT attributes received: device=%s", attrs.device_id)
         # Attributes surface only as an opaque attribute of the lawn mower;
         # kept whole as rejected input as well.
-        self.record_rejected("attributes", None, "unknown_channel", attrs.raw)
+        self.record_rejected(
+            "attributes", None, "unknown_channel", attrs.raw, received_at=attrs.received_at
+        )
         self._last_attributes = attrs
         self._publish()
 
@@ -267,6 +273,7 @@ class NavimowCoordinator(DataUpdateCoordinator[None]):
         self.record_rejected(
             message.channel, message.topic, message.reason,
             payload.decode("utf-8", "replace"), list(message.reasons),
+            received_at=message.received_at,
         )
 
     @callback
@@ -277,14 +284,17 @@ class NavimowCoordinator(DataUpdateCoordinator[None]):
         reason: str,
         payload: Any,
         reasons: list[str] | None = None,
+        received_at: datetime | None = None,
     ) -> None:
         """Record input that was received but not applied (see rejected.py).
 
         Each call is one state update of the rejected_input sensor, so the
-        recorder keeps every item.
+        recorder keeps every item. The stamp is the SDK's receipt time when
+        the message carries one, else now.
         """
         self._last_rejected = rejection_record(
-            channel, topic, reason, payload, dt_util.utcnow().isoformat(), reasons
+            channel, topic, reason, payload,
+            (received_at or dt_util.utcnow()).isoformat(), reasons,
         )
         self._rejected_count += 1
         self._publish()
@@ -298,9 +308,14 @@ class NavimowCoordinator(DataUpdateCoordinator[None]):
         The entities show the record assembled so far at once; the whole of
         it goes to the client in async_finish_restore(). A group stays
         restored until a live record differs from it in the group's fields.
-        Live data wins: nothing is restored once a live record exists.
+        Live data wins: nothing is restored once a live record exists, and
+        nothing after async_finish_restore() (a sensor enabled or re-added
+        later): the record by then holds live data, or the restored record
+        the client already has, which a recorded value cannot improve.
         """
-        if not fields or (self._last_location is not None and not self._restored_groups):
+        if self._restore_finished or not fields:
+            return
+        if self._last_location is not None and not self._restored_groups:
             return
         self._restored_fields.update(fields)
         self._restored_groups.add(group)
@@ -323,6 +338,7 @@ class NavimowCoordinator(DataUpdateCoordinator[None]):
         decoder, whose high-water marks it seeds, so a late entry older than
         what was shown before the restart is rejected as stale.
         """
+        self._restore_finished = True
         if self._restored_groups and self._last_location is not None:
             self.client.restore_location(self.device.id, self._last_location)
 

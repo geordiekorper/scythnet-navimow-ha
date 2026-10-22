@@ -45,6 +45,7 @@ class HealthFromClientTest(unittest.TestCase):
         health = CollectorHealth(FakeClient(None))
         self.assertEqual((health.connects, health.disconnects, health.connect_failures, health.rebuilds), (0, 0, 0, 0))
         self.assertIsNone(health.client_id)
+        self.assertIsNone(health.connected_at)
         self.assertIsNone(health.last_message_at("dev-1"))
         self.assertEqual(health.status, "starting")
         health = CollectorHealth()  # the client is set after construction
@@ -53,17 +54,22 @@ class HealthFromClientTest(unittest.TestCase):
         self.mqtt.connects = 2
         self.assertEqual(health.connects, 2)
 
-    def test_the_connection_events_set_the_flag_and_the_stamps(self):
+    def test_the_connection_events_set_the_flag_and_the_stamps_are_the_clients(self):
+        stamp = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
         self.health.note_connection(event("connected"))
         self.assertTrue(self.health.connected)
-        self.assertIsNotNone(self.health.connected_at)
+        self.assertIsNone(self.health.connected_at)  # the fake client stamped nothing
+        self.mqtt.last_connected_at = stamp
+        self.assertEqual(self.health.connected_at, stamp.isoformat())
+        self.mqtt.last_disconnected_at = stamp
         self.health.note_connection(event("disconnected"))
         self.assertFalse(self.health.connected)
-        self.assertIsNotNone(self.health.disconnected_at)
+        self.assertEqual(self.health.connection_attributes()["disconnected_at"], stamp.isoformat())
         self.health.note_connection(event("connected"))
+        self.mqtt.last_connect_failed_at = stamp
         self.health.note_connection(event("connect_failed"))
         self.assertFalse(self.health.connected)
-        self.assertIsNotNone(self.health.connect_failed_at)
+        self.assertEqual(self.health.connect_failed_at, stamp.isoformat())
 
     def test_a_connect_after_failed_attempts_counts_one_recovery(self):
         self.health.note_connection(event("connected"))
