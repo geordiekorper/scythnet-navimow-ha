@@ -288,12 +288,14 @@ merging it updates the integration manifest, tags the commit
 
 The numbering continues the official integration's: the fork's 1.2.0 followed the
 official 1.1.0, so the number says nothing about maturity. From 1.3.0 on the fork
-is versioned as alpha software: every release is a pre-release, `1.3.0-alpha`,
-then `1.3.0-alpha.1`, `1.3.0-alpha.2` and so on whatever mix of features and
-fixes it carries, and is flagged as a pre-release on GitHub, so HACS shows it
-only with **Show beta versions** on. The suffix is dropped when a release is
-considered stable. Hand-written notes for each release sit below the generated
-entry in the changelog.
+is versioned as alpha software: every release is a pre-release, numbered like
+the SDK's (`0.2.0a7`): `1.3.0-a1`, then `1.3.0-a2`, `1.3.0-a3` and so on whatever
+mix of features and fixes it carries, then `1.3.0-b1` and `1.3.0-rc1` as it
+matures, and is flagged as a pre-release on GitHub, so HACS shows it only with
+**Show beta versions** on. The hyphen is Release Please's; to Python packaging
+`1.3.0-a1` and `1.3.0a1` are the same version, and Home Assistant accepts both.
+The suffix is dropped when a release is considered stable. Hand-written notes
+for each release sit below the generated entry in the changelog.
 
 ### Testing against an SDK release
 

@@ -7,7 +7,7 @@
       "package-name": "NavimowHA",
       "changelog-path": "CHANGELOG.md",
       "versioning": "prerelease",
-      "prerelease-type": "alpha",
+      "prerelease-type": "a",
       "prerelease": true,
       "extra-files": [
         {
